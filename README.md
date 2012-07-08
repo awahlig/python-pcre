@@ -28,7 +28,7 @@ Differences between python-pcre and re
 --------------------------------------
 
 The API is very similar to that of the built-in `re` module:
-http://docs.python.org/library/re.html
+* http://docs.python.org/library/re.html
 
 Known differences are:
 
@@ -56,7 +56,7 @@ The arguments used in `str.format()` call are:
 * all named groups as keyword arguments.
 
 For a comprehensive PCRE regex syntax you can visit PHP documentation:
-http://php.net/manual/en/reference.pcre.pattern.syntax.php
+* http://php.net/manual/en/reference.pcre.pattern.syntax.php
 
 License
 -------
