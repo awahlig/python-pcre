@@ -35,8 +35,8 @@ class Match(_pcre.Match):
 
 
 class Pattern(_pcre.Pattern):
-    # Tell _pcre.Pattern to use this subclass for match instances.
-    _match_class = Match
+    # Tell _pcre.Pattern to use this subtype for match instances.
+    _match_type = Match
 
     def search(self, string, pos=-1, endpos=-1):
         return self(string, pos, endpos)

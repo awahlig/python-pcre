@@ -34,23 +34,26 @@ static PyObject *PyExc_PCREError;
 
 typedef struct {
     PyObject_HEAD
-    PyObject *pattern; /* as passed in */
+    PyObject *pattern; /* str or unicode as passed in */
     pcre16 *code;
     int options;
     int groups; /* capture count */
-    PyObject *groupindex; /* name->index */
+    PyObject *groupindex; /* name->index dict */
 } PyPatternObject;
 
 typedef struct {
     PyObject_HEAD
     PyPatternObject *pattern;
-    PyObject *string; /* as passed in */
+    PyObject *string; /* str or unicode as passed in */
     int *ovector;
     int lastindex;
-    int startpos;
-    int endpos;
+    int startpos; /* after boundary checks */
+    int endpos; /* after boundary checks */
 } PyMatchObject;
 
+/* Returns a new reference to a unicode object.
+ * If argument is a str, decodes it using latin1 encoding.
+ */
 static PyObject *
 as_unicode(PyObject *op)
 {
@@ -67,6 +70,9 @@ as_unicode(PyObject *op)
     return NULL;
 }
 
+/* Translates a group index into a group name (unicode).
+ * If not found, returns the default object.  Returns new reference.
+ */
 static PyObject *
 group_name_by_index(pcre16 *code, int index, PyObject *def)
 {
@@ -92,6 +98,9 @@ group_name_by_index(pcre16 *code, int index, PyObject *def)
  * Match
  */
 
+/* Slices the subject string using indexes from given group.
+ * If group has no match, returns the default object.  Returns new reference.
+ */
 static PyObject *
 getsubstr(PyMatchObject *op, Py_ssize_t index, PyObject *def)
 {
@@ -111,6 +120,9 @@ getsubstr(PyMatchObject *op, Py_ssize_t index, PyObject *def)
     return PySequence_GetSlice(op->string, pos, op->ovector[index * 2 + 1]);
 }
 
+/* Same as getsubstr() but group index is specifed as an object.
+ * This can be an int/long index or str/unicode group name.
+ */
 static PyObject *
 getsubstro(PyMatchObject *op, PyObject *index, PyObject *def)
 {
@@ -118,7 +130,7 @@ getsubstro(PyMatchObject *op, PyObject *index, PyObject *def)
 
     if (PyInt_Check(index) || PyLong_Check(index))
         i = PyInt_AsSsize_t(index);
-    else if (op->pattern->groupindex) {
+    else {
         index = PyDict_GetItem(op->pattern->groupindex, index);
         if (index)
             return getsubstro(op, index, def);
@@ -144,13 +156,13 @@ match_group(PyMatchObject *self, PyObject *args)
 
     size = PyTuple_GET_SIZE(args);
     switch (size) {
-        case 0:
+        case 0: /* no args -- return the whole match */
             result = getsubstr(self, 0, Py_None);
             break;
-        case 1:
+        case 1: /* one arg -- return a single slice */
             result = getsubstro(self, PyTuple_GET_ITEM(args, 0), Py_None);
             break;
-        default:
+        default: /* more than one arg -- return a tuple of slices */
             result = PyTuple_New(size);
             if (result == NULL)
                 return NULL;
@@ -257,20 +269,18 @@ match_groupdict(PyMatchObject *self, PyObject *args)
     if (dict == NULL)
         return NULL;
 
-    if (self->pattern->groupindex) {
-        pos = 0;
-        while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
-            value = getsubstro(self, value, def);
-            if (value == NULL) {
-                Py_DECREF(dict);
-                return NULL;
-            }
-            rc = PyDict_SetItem(dict, key, value);
-            Py_DECREF(value);
-            if (rc < 0) {
-                Py_DECREF(dict);
-                return NULL;
-            }
+    pos = 0;
+    while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
+        value = getsubstro(self, value, def);
+        if (value == NULL) {
+            Py_DECREF(dict);
+            return NULL;
+        }
+        rc = PyDict_SetItem(dict, key, value);
+        Py_DECREF(value);
+        if (rc < 0) {
+            Py_DECREF(dict);
+            return NULL;
         }
     }
 
@@ -350,6 +360,7 @@ static PyTypeObject PyMatch_Type = {
     0,                                  /* tp_free */
 };
 
+/* Creates a new Match instance.  Takes ownership of ovector. */
 static PyObject *
 new_match(PyPatternObject *pattern, PyObject *string, int startpos, int endpos,
     int *ovector, int captures)
@@ -359,21 +370,21 @@ new_match(PyPatternObject *pattern, PyObject *string, int startpos, int endpos,
     PyObject *usertype;
     int rc;
 
-    /* Get the Match class to use. */
-    usertype = PyObject_GetAttrString((PyObject *)pattern, "_match_class");
+    /* Get the Match type to use. */
+    usertype = PyObject_GetAttrString((PyObject *)pattern, "_match_type");
     if (usertype) {
+        /* Must inherit PyMatch_Type. */
         rc = PyObject_IsSubclass(usertype, (PyObject *)type);
-        if (rc < 0) {
+        if (rc < 0) { /* check failed */
             Py_DECREF(usertype);
             return NULL;
         }
-        if (rc)
-            type = (PyTypeObject *)usertype;
-        else {
+        if (!rc) { /* not a PyMatch_Type subtype */
             Py_DECREF(usertype);
-            PyErr_SetString(PyExc_TypeError, "_match_class must be a Match subclass");
+            PyErr_SetString(PyExc_TypeError, "_match_class must be a Match subtype");
             return NULL;
         }
+        type = (PyTypeObject *)usertype; /* override */
     }
     else if (PyErr_ExceptionMatches(PyExc_AttributeError))
         PyErr_Clear();
@@ -393,7 +404,7 @@ new_match(PyPatternObject *pattern, PyObject *string, int startpos, int endpos,
         self->startpos = startpos;
         self->endpos = endpos;
 
-        /* Call __init__ if defined by subtype. */
+        /* Call __init__() with no args if defined by subtype. */
         if (type->tp_init) {
             PyObject *args = PyTuple_New(0);
             if (args) {
@@ -414,6 +425,7 @@ new_match(PyPatternObject *pattern, PyObject *string, int startpos, int endpos,
  * Pattern
  */
 
+/* Create a mapping from group names to group indexes. */
 static PyObject *
 make_groupindex(pcre16 *code)
 {
@@ -471,12 +483,12 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
             &pattern, &options))
         return NULL;
 
-    /* If pattern is already an instance of this type, check its options. If they
+    /* If pattern is already an instance of this type, check its options.  If they
      * are the same as options requested for this pattern, simply return this instance
      * instead of creating a new one.  If options differ, extract the regex string
      * and create a new instance using this string and requested options.
      */
-    if (pattern->ob_type == type) {
+    if (Py_TYPE(pattern) == type) {
         self = (PyPatternObject *)pattern;
         if (self->options == options) {
             Py_INCREF(pattern);
@@ -498,6 +510,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     self->pattern = pattern;
     Py_INCREF(pattern);
 
+    /* Compile the regex. */
     self->code = pcre16_compile(PyUnicode_AS_UNICODE(ustr), options,
             &err, &erroffset, NULL);
 
@@ -509,7 +522,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         return NULL;
     }
     
-    /* get effective options and number of captuing groups */
+    /* get effective options and number of capturing groups */
     pcre16_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
     pcre16_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
 
@@ -532,6 +545,9 @@ pattern_dealloc(PyPatternObject *self)
     Py_TYPE(self)->tp_free(self);
 }
 
+/* Pattern.__call__ function performing the search.
+ * Additional flags argument lets PCRE specific options to be set.
+ */
 static PyObject *
 pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
 {
@@ -573,6 +589,7 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
         return NULL;
     }
 
+    /* Perform the search. */
     rc = pcre16_exec(self->code, NULL, PyUnicode_AS_UNICODE(ustr),
             endpos, pos, options, ovector, ovecsize);
 
@@ -595,10 +612,10 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
         PyErr_NoMemory();
     else {
         PyObject *v = PyInt_FromLong(rc);
-        if (v == NULL)
-            return NULL;
-        PyErr_SetObject(PyExc_PCREError, v);
-        Py_DECREF(v);
+        if (v) {
+            PyErr_SetObject(PyExc_PCREError, v);
+            Py_DECREF(v);
+        }
     }
     return NULL;
 }
