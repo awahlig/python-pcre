@@ -7,7 +7,7 @@ Python bindings for PCRE regex engine.
 Requirements
 ------------
 
-* PCRE 8.30
+* PCRE 8.30 (http://www.pcre.org)
 
 So far tested with Python 2.7 only.
 
@@ -55,6 +55,8 @@ The arguments used in `str.format()` call are:
 * all groups starting from group 0 (entire match) as positional arguments,
 * all named groups as keyword arguments.
 
+For a comprehensive PCRE regex syntax you can visit PHP documentation:
+http://php.net/manual/en/reference.pcre.pattern.syntax.php
 
 License
 -------
