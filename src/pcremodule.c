@@ -471,8 +471,19 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
             &pattern, &options))
         return NULL;
 
-    if (PyObject_TypeCheck(pattern, type))
-        pattern = ((PyPatternObject *)pattern)->pattern;
+    /* If pattern is already an instance of this type, check its options. If they
+     * are the same as options requested for this pattern, simply return this instance
+     * instead of creating a new one.  If options differ, extract the regex string
+     * and create a new instance using this string and requested options.
+     */
+    if (pattern->ob_type == type) {
+        self = (PyPatternObject *)pattern;
+        if (self->options == options) {
+            Py_INCREF(pattern);
+            return pattern;
+        }
+        pattern = self->pattern;
+    }
 
     ustr = as_unicode(pattern);
     if (ustr == NULL)
@@ -498,7 +509,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         return NULL;
     }
     
-    /* get some info */
+    /* get effective options and number of captuing groups */
     pcre16_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
     pcre16_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
 

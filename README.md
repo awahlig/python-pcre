@@ -24,12 +24,17 @@ Installation
 TBD
 
 
-Differences between python-pcre and re modules
-----------------------------------------------
+Differences between python-pcre and re
+--------------------------------------
+
+The API is very similar to that of the built-in `re` module:
+http://docs.python.org/library/re.html
+
+Most notable differences are:
 
 * slightly different regex syntax
-* `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1`
-* returned group names are always unicode strings
+* `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1` substitution
+* group names from `groupindex`, `groupdict()`, `lastgroup` are always unicode
 * `DEBUG`, `LOCALE`, `VERBOSE` flags are not supported
 * pattern caching is not supported
 
