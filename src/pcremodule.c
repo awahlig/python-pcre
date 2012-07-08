@@ -95,6 +95,21 @@ group_name_by_index(pcre16 *code, int index, PyObject *def)
     return def;
 }
 
+static PyObject *
+set_pcre_error(int rc)
+{
+    if (rc == PCRE_ERROR_NOMEMORY)
+        PyErr_NoMemory();
+    else {
+        PyObject *v = PyInt_FromLong(rc);
+        if (v) {
+            PyErr_SetObject(PyExc_PCREError, v);
+            Py_DECREF(v);
+        }
+    }
+    return NULL;
+}
+
 /*
  * Match
  */
@@ -475,7 +490,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     PyObject *pattern, *ustr;
     int options = 0;
     const char *err = NULL;
-    int erroffset;
+    int rc;
     PyPatternObject *self;
 
     static const char *const kwlist[] = {"pattern", "flags", NULL};
@@ -513,7 +528,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 
     /* Compile the regex. */
     self->code = pcre16_compile(PyUnicode_AS_UNICODE(ustr), options,
-            &err, &erroffset, NULL);
+            &err, &rc, NULL);
 
     Py_DECREF(ustr);
 
@@ -524,8 +539,13 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     }
     
     /* get effective options and number of capturing groups */
-    pcre16_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
-    pcre16_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
+    rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
+    if (rc == 0)
+        rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
+    if (rc != 0) {
+        Py_DECREF(self);
+        return set_pcre_error(rc);
+    }
 
     /* create a dict mapping named group names to their indexes */
     self->groupindex = make_groupindex(self->code);
@@ -609,17 +629,78 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
         Py_RETURN_NONE;
     else if (rc == 0)
         PyErr_SetString(PyExc_RuntimeError, "vector overflow");
-    else if (rc == PCRE_ERROR_NOMEMORY)
-        PyErr_NoMemory();
-    else {
-        PyObject *v = PyInt_FromLong(rc);
-        if (v) {
-            PyErr_SetObject(PyExc_PCREError, v);
-            Py_DECREF(v);
-        }
-    }
+    else
+        set_pcre_error(rc);
     return NULL;
 }
+
+/* Dumps the compiled regex into a string. */
+static PyObject *
+pattern_dumps(PyPatternObject *self)
+{
+    size_t size;
+    int rc;
+
+    rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_SIZE, &size);
+    if (rc != 0)
+        return set_pcre_error(rc);
+    return PyString_FromStringAndSize((char *)self->code, size);
+}
+
+/* Loads a compiled regex from a string. */
+static PyObject *
+pattern_loads(PyTypeObject *type, PyObject *args)
+{
+    char *data;
+    Py_ssize_t length;
+    PyPatternObject *self;
+    int rc;
+
+    if (!PyArg_ParseTuple(args, "s#:loads", &data, &length))
+        return NULL;
+
+    self = (PyPatternObject *)type->tp_alloc(type, 0);
+    if (self == NULL)
+        return NULL;
+
+    self->code = pcre16_malloc(length);
+    if (self->code == NULL) {
+        Py_DECREF(self);
+        PyErr_NoMemory();
+        return NULL;
+    }
+
+    /* Copy the regex. */
+    memcpy(self->code, data, length);
+
+    /* Pattern string is not available so use None. */
+    self->pattern = Py_None;
+    Py_INCREF(Py_None);
+
+    /* get options and number of capturing groups */
+    rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
+    if (rc == 0)
+        rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
+    if (rc != 0) {
+        Py_DECREF(self);
+        return set_pcre_error(rc);
+    }
+
+    /* create a dict mapping named group names to their indexes */
+    self->groupindex = make_groupindex(self->code);
+    if (self->groupindex == NULL) {
+        Py_DECREF(self);
+        return NULL;
+    }
+
+    return (PyObject *)self;
+}
+
+static const PyMethodDef pattern_methods[] = {
+    {"dumps",   (PyCFunction)pattern_dumps,     METH_NOARGS},
+    {"loads",   (PyCFunction)pattern_loads,     METH_CLASS|METH_VARARGS},
+    {NULL}      // sentinel
+};
 
 static const PyMemberDef pattern_members[] = {
     {"pattern",     T_OBJECT,   offsetof(PyPatternObject, pattern),     READONLY},
@@ -658,7 +739,7 @@ static PyTypeObject PyPattern_Type = {
     0,                                  /* tp_weaklistoffset */
     0,                                  /* tp_iter */
     0,                                  /* tp_iternext */
-    0,                                  /* tp_methods */
+    (PyMethodDef *)pattern_methods,     /* tp_methods */
     (PyMemberDef *)pattern_members,     /* tp_members */
     0,                                  /* tp_getset */
     0,                                  /* tp_base */
