@@ -73,8 +73,8 @@ class Pattern(_pcre.Pattern):
         return self.subn(repl, string, count)[0]
 
     def subn(self, repl, string, count=0):
-        if not callable(repl):
-            repl = lambda m, s=repl: s.format(m.group(), *m.groups(), **m.groupdict())
+        if not hasattr(repl, '__call__'):
+            repl = lambda match, tmpl=repl: match.expand(tmpl)
         output = []
         pos = 0
         n = 0
