@@ -28,7 +28,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <Python.h>
 #include <structmember.h>
-#include "pcre.h"
+
+#include <pcre.h>
 
 static PyObject *PyExc_PCREError;
 

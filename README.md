@@ -30,7 +30,7 @@ Differences between python-pcre and re
 The API is very similar to that of the built-in `re` module:
 http://docs.python.org/library/re.html
 
-Most notable differences are:
+Known differences are:
 
 * slightly different regex syntax
 * `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1` substitution
