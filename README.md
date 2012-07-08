@@ -33,7 +33,7 @@ Differences between python-pcre and re modules
 * `DEBUG`, `LOCALE`, `VERBOSE` flags are not supported
 * pattern caching is not supported
 
-### Substitution example
+Substitution example:
 
 ```python
 >>> pcre.sub(r'def\s+([a-zA-Z_][a-zA-Z_0-9]*)\s*\(\s*\):',
@@ -47,7 +47,7 @@ The built-in re module would use `\1` and a raw string instead:
 `r'static PyObject*\npy_\1(void)\n{'`
 
 The arguments used in `str.format()` call are:
-* all groups starting from 0 (entire match) as positional arguments,
+* all groups starting from group 0 (entire match) as positional arguments,
 * all named groups as keyword arguments.
 
 
