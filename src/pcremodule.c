@@ -1,5 +1,30 @@
-/* PCRE - Perl-Compatible Regular Expressions
- */
+/* python-pcre
+
+Copyright (c) 2012, Arkadiusz Wahlig
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * Neither the name of the <organization> nor the
+      names of its contributors may be used to endorse or promote products
+      derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
 
 #include <Python.h>
 #include <structmember.h>
@@ -67,6 +92,41 @@ group_name_by_index(pcre16 *code, int index, PyObject *def)
  * Match
  */
 
+static PyObject *
+getsubstr(PyMatchObject *op, Py_ssize_t index, PyObject *def)
+{
+	int pos;
+
+	if (index < 0 || index > op->pattern->groups) {
+		PyErr_SetString(PyExc_IndexError, "no such group");
+		return NULL;
+	}
+
+	pos = op->ovector[index * 2];
+	if (pos < 0) {
+		Py_INCREF(def);
+		return def;
+	}
+
+	return PySequence_GetSlice(op->string, pos, op->ovector[index * 2 + 1]);
+}
+
+static PyObject *
+getsubstro(PyMatchObject *op, PyObject *index, PyObject *def)
+{
+	Py_ssize_t i = -1;
+
+	if (PyInt_Check(index) || PyLong_Check(index))
+		i = PyInt_AsSsize_t(index);
+	else if (op->pattern->groupindex) {
+		index = PyDict_GetItem(op->pattern->groupindex, index);
+		if (index)
+			return getsubstro(op, index, def);
+	}
+
+	return getsubstr(op, i, def);
+}
+
 static void
 match_dealloc(PyMatchObject *self)
 {
@@ -74,41 +134,6 @@ match_dealloc(PyMatchObject *self)
 	Py_XDECREF(self->string);
 	pcre16_free(self->ovector);
 	Py_TYPE(self)->tp_free(self);
-}
-
-static PyObject *
-match_getsubstr(PyMatchObject *self, Py_ssize_t index, PyObject *def)
-{
-	int pos;
-
-	if (index < 0 || index > self->pattern->groups) {
-		PyErr_SetString(PyExc_IndexError, "no such group");
-		return NULL;
-	}
-
-	pos = self->ovector[index * 2];
-	if (pos < 0) {
-		Py_INCREF(def);
-		return def;
-	}
-
-	return PySequence_GetSlice(self->string, pos, self->ovector[index * 2 + 1]);
-}
-
-static PyObject *
-match_getsubstr_o(PyMatchObject *self, PyObject *index, PyObject *def)
-{
-	Py_ssize_t i = -1;
-
-	if (PyInt_Check(index) || PyLong_Check(index))
-		i = PyInt_AsSsize_t(index);
-	else if (self->pattern->groupindex) {
-		index = PyDict_GetItem(self->pattern->groupindex, index);
-		if (index)
-			return match_getsubstr_o(self, index, def);
-	}
-
-	return match_getsubstr(self, i, def);
 }
 
 static PyObject *
@@ -120,17 +145,17 @@ match_group(PyMatchObject *self, PyObject *args)
 	size = PyTuple_GET_SIZE(args);
 	switch (size) {
 		case 0:
-			result = match_getsubstr_o(self, Py_False, Py_None);
+			result = getsubstr(self, 0, Py_None);
 			break;
 		case 1:
-			result = match_getsubstr_o(self, PyTuple_GET_ITEM(args, 0), Py_None);
+			result = getsubstro(self, PyTuple_GET_ITEM(args, 0), Py_None);
 			break;
 		default:
 			result = PyTuple_New(size);
 			if (result == NULL)
 				return NULL;
 			for (i = 0; i < size; ++i) {
-				PyObject *item = match_getsubstr_o(self,
+				PyObject *item = getsubstro(self,
 						PyTuple_GET_ITEM(args, i), Py_None);
 				if (item == NULL) {
 					Py_DECREF(result);
@@ -207,7 +232,7 @@ match_groups(PyMatchObject *self, PyObject *args)
 		return NULL;
 
 	for (index = 1; index <= self->pattern->groups; ++index) {
-		PyObject *item = match_getsubstr(self, index, def);
+		PyObject *item = getsubstr(self, index, def);
 		if (item == NULL) {
 			Py_DECREF(result);
 			return NULL;
@@ -235,7 +260,7 @@ match_groupdict(PyMatchObject *self, PyObject *args)
 	if (self->pattern->groupindex) {
 		pos = 0;
 		while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
-			value = match_getsubstr_o(self, value, def);
+			value = getsubstro(self, value, def);
 			if (value == NULL) {
 				Py_DECREF(dict);
 				return NULL;
