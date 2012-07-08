@@ -645,7 +645,7 @@ static PyTypeObject PyPattern_Type = {
     0,                                  /* tp_as_sequence */
     0,                                  /* tp_as_mapping */
     0,                                  /* tp_hash */
-    pattern_call,                       /* tp_call */
+    (ternaryfunc)pattern_call,          /* tp_call */
     0,                                  /* tp_str */
     0,                                  /* tp_getattro */
     0,                                  /* tp_setattro */
