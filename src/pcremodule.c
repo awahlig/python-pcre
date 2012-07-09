@@ -52,23 +52,38 @@ typedef struct {
     int endpos; /* after boundary checks */
 } PyMatchObject;
 
-/* Returns a new reference to a unicode object.
- * If argument is a str, decodes it using latin1 encoding.
+/* Returns a new reference to a str object with UTF-16 data.
+ * The str always has a BOM at the beginning.
  */
 static PyObject *
-as_unicode(PyObject *op)
+as_utf16(PyObject *op)
 {
-    if (PyUnicode_Check(op)) {
-        Py_INCREF(op);
+    if (PyUnicode_Check(op))
+        return PyUnicode_AsUTF16String(op);
+
+    if (PyString_Check(op)) {
+        PyObject *t = PyUnicode_DecodeLatin1(PyString_AS_STRING(op),
+                PyString_GET_SIZE(op), NULL);
+        if (t == NULL)
+            return NULL;
+        op = PyUnicode_AsUTF16String(t);
+        Py_DECREF(t);
         return op;
     }
 
-    if (PyString_Check(op))
-        return PyUnicode_DecodeLatin1(PyString_AS_STRING(op),
-                PyString_GET_SIZE(op), NULL);
-
     PyErr_SetString(PyExc_TypeError, "unicode or str expected");
     return NULL;
+}
+
+/* Returns a new reference to a unicode object from UTF16 data.
+ */
+static PyObject *
+from_utf16(PCRE_SPTR16 s)
+{
+    Py_ssize_t i;
+
+    for (i = 0; s[i]; ++i) {}
+    return PyUnicode_DecodeUTF16((char *)s, i << 1, NULL, NULL);
 }
 
 /* Translates a group index into a group name (unicode).
@@ -86,7 +101,7 @@ group_name_by_index(pcre16 *code, int index, PyObject *def)
     {
         for (i = 0; i < count; ++i) {
             if (table[0] == index)
-                return PyUnicode_FromUnicode(table + 1, wcslen(table + 1));
+                return from_utf16(table + 1);
             table += size;
         }
     }
@@ -460,7 +475,7 @@ make_groupindex(pcre16 *code)
         return dict;
 
     for (index = 0; index < count; ++index) {
-        key = PyUnicode_FromUnicode(table + 1, wcslen(table + 1));
+        key = from_utf16(table + 1);
         if (key == NULL) {
             Py_DECREF(dict);
             return NULL;
@@ -487,7 +502,7 @@ make_groupindex(pcre16 *code)
 static PyObject *
 pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
-    PyObject *pattern, *ustr;
+    PyObject *pattern, *utf16;
     int options = 0;
     const char *err = NULL;
     int rc;
@@ -513,13 +528,13 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         pattern = self->pattern;
     }
 
-    ustr = as_unicode(pattern);
-    if (ustr == NULL)
+    utf16 = as_utf16(pattern);
+    if (utf16 == NULL)
         return NULL;
 
     self = (PyPatternObject *)type->tp_alloc(type, 0);
     if (self == NULL) {
-        Py_DECREF(ustr);
+        Py_DECREF(utf16);
         return NULL;
     }
 
@@ -527,10 +542,10 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     Py_INCREF(pattern);
 
     /* Compile the regex. */
-    self->code = pcre16_compile(PyUnicode_AS_UNICODE(ustr), options,
+    self->code = pcre16_compile((PCRE_SPTR16)PyString_AS_STRING(utf16) + 1, options,
             &err, &rc, NULL);
 
-    Py_DECREF(ustr);
+    Py_DECREF(utf16);
 
     if (self->code == NULL) {
         Py_DECREF(self);
@@ -573,7 +588,7 @@ static PyObject *
 pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
 {
     PyObject *string;
-    PyObject *ustr;
+    PyObject *utf16;
     int *ovector;
     int ovecsize;
     int length;
@@ -588,33 +603,33 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
             &string, &pos, &endpos, &options))
         return NULL;
 
-    ustr = as_unicode(string);
-    if (ustr == NULL)
+    length = PySequence_Length(string);
+    if (length < 0)
         return NULL;
-
-    length = PyUnicode_GET_SIZE(ustr);
     if (pos < 0)
         pos = 0;
     if (endpos < 0)
         endpos = length;
-    if (pos > endpos || endpos > length) {
-        Py_DECREF(ustr);
+    if (pos > endpos || endpos > length)
         Py_RETURN_NONE;
-    }
+
+    utf16 = as_utf16(string);
+    if (utf16 == NULL)
+        return NULL;
 
     ovecsize = (self->groups + 1) * 6;
     ovector = pcre16_malloc(ovecsize * sizeof(int));
     if (ovector == NULL) {
-        Py_DECREF(ustr);
+        Py_DECREF(utf16);
         PyErr_NoMemory();
         return NULL;
     }
 
     /* Perform the search. */
-    rc = pcre16_exec(self->code, NULL, PyUnicode_AS_UNICODE(ustr),
+    rc = pcre16_exec(self->code, NULL, (PCRE_SPTR16)PyString_AS_STRING(utf16) + 1,
             endpos, pos, options, ovector, ovecsize);
 
-    Py_DECREF(ustr);
+    Py_DECREF(utf16);
 
     if (rc > 0) {
         PyObject *match = new_match(self, string, pos, endpos, ovector, rc);
