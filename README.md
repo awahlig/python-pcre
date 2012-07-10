@@ -30,7 +30,7 @@ Differences between python-pcre and re
 The API is very similar to that of the built-in `re` module:
 * http://docs.python.org/library/re.html
 
-Known differences are:
+Differences:
 
 * slightly different regex syntax
 * `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1` substitution
@@ -65,16 +65,22 @@ Unicode handling
 python-pcre internally uses the 8-bit interface of the PCRE library.
 When a unicode object is used as pattern, it is first encoded using UTF-8
 before it is passed to PCRE.  Also, pcre.UTF8 flag is added to user flags.
+
 Alternatively, an existing UTF-8 byte string can be used and the pcre.UTF8
 flag can be set manually.  If a byte string is used without this flag, PCRE
 works in single-byte mode.
 
-If PCRE works in UTF-8 mode, the matched strings can either be unicode or
-UTF-8 byte strings.  Trying to use byte strings that aren't valid UTF-8
-will result in PCREError exception.
+The most important difference between the two is the handling of start and
+end offsets when matching.  For unicode, they are expressed in characters,
+for UTF-8 byte strings, in bytes.  In the latter case they must not point
+in the middle of multibyte characters or else a PCREError exception is raised.
 
-The general advice is to be consistent and use the same types for patterns
-and matched data.
+If PCRE works in UTF-8 mode, the strings used when matching can either be
+unicode or UTF-8 byte strings.  Trying to use byte strings that aren't valid
+UTF-8 will result in PCREError exception.
+
+The general rule to follow is to be consistent and use the same types for
+patterns and matched strings.
 
 
 License
