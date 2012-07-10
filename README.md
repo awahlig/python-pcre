@@ -8,8 +8,9 @@ Requirements
 ------------
 
 * PCRE (http://www.pcre.org)
+* Python (http://python.org/)
 
-So far tested with Python 2.7 only.
+So far tested with PCRE 8.30 and Python 2.7 only.
 
 
 Building and installation
@@ -21,14 +22,6 @@ and installation should be as simple as:
 
 ```
 $ python setup.py build
-```
-
-
-Installation
-------------
-
-```
-$ python setup.py install
 ```
 
 
