@@ -83,6 +83,19 @@ The general rule to follow is to be consistent and use the same types for
 patterns and matched strings.
 
 
+Why
+---
+
+I created python-pcre because I was unsatisfied with the performance of
+regular expression parser in `re`.  PCRE has a fast parser written in C
+whereas `re`'s parser is written in pure Python (only the maching is done
+in C).  As a result, Python libraries compiling many regular expressions
+at import time have long load-times on slower (embedded) systems.
+
+Most of the time such libraries can be sped up by simply replacing
+`import re` with `import pcre as re`.
+
+
 License
 -------
 
