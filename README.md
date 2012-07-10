@@ -12,16 +12,24 @@ Requirements
 So far tested with Python 2.7 only.
 
 
-Building
---------
+Building and installation
+-------------------------
 
-TBD
+A standard distutils `setup.py` script is provided.
+After making sure all dependencies are installed, building
+and installation should be as simple as:
+
+```
+$ python setup.py build
+```
 
 
 Installation
 ------------
 
-TBD
+```
+$ python setup.py install
+```
 
 
 Differences between python-pcre and re
@@ -99,7 +107,7 @@ Most of the time such libraries can be sped up by simply replacing
 Todo
 ----
 
-* `re`-style substitution
+* `re`-style substitution (for backward compatibility)
 
 
 License

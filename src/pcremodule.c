@@ -63,7 +63,6 @@ utf8_offset_to_index(PyObject *op, int offset)
 {
     int i, length, index;
     const char *data;
-    char c;
 
     data = PyString_AS_STRING(op);
     length = PyString_GET_SIZE(op);
@@ -81,7 +80,6 @@ utf8_index_to_offset(PyObject *op, int index)
 {
     int i, length;
     const char *data;
-    char c;
 
     data = PyString_AS_STRING(op);
     length = PyString_GET_SIZE(op);
@@ -109,6 +107,9 @@ obj_as_str(PyObject *op, int *options)
         Py_INCREF(op);
         return op;
     }
+
+    PyErr_SetString(PyExc_TypeError, "str or unicode argument expected");
+    return NULL;
 }
 
 /* Converts a null-terminated C-string to either a str or unicode
