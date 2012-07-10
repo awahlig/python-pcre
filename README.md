@@ -93,7 +93,13 @@ in C).  As a result, Python libraries building and compiling many regular
 expressions at import time have long load-times on slower (embedded) systems.
 
 Most of the time such libraries can be sped up by simply replacing
-`import re` with `import pcre as re`.
+`import re` with `import pcre as re` (unless substitution is used).
+
+
+Todo
+----
+
+* `re`-style substitution
 
 
 License
