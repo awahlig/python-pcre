@@ -127,5 +127,6 @@ I = IGNORECASE = _pcre.IGNORECASE
 M = MULTILINE = _pcre.MULTILINE
 S = DOTALL = _pcre.DOTALL
 U = UNICODE = _pcre.UNICODE
+UTF8 = _pcre.UTF8
 
 __version__ = _pcre.version()

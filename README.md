@@ -7,7 +7,7 @@ Python bindings for PCRE regex engine.
 Requirements
 ------------
 
-* PCRE 8.30 (http://www.pcre.org)
+* PCRE (http://www.pcre.org)
 
 So far tested with Python 2.7 only.
 
@@ -34,9 +34,9 @@ Known differences are:
 
 * slightly different regex syntax
 * `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1` substitution
-* group names from `groupindex`, `groupdict()`, `lastgroup` are always unicode
 * `DEBUG`, `LOCALE`, `VERBOSE` flags are not supported
 * pattern caching is not supported
+* buffer types are not supported as input (only str and unicode)
 
 Substitution example:
 
@@ -57,6 +57,25 @@ The arguments used in `str.format()` call are:
 
 For a comprehensive PCRE regex syntax you can visit PHP documentation:
 * http://php.net/manual/en/reference.pcre.pattern.syntax.php
+
+
+Unicode handling
+----------------
+
+python-pcre internally uses the 8-bit interface of the PCRE library.
+When a unicode object is used as pattern, it is first encoded using UTF-8
+before it is passed to PCRE.  Also, pcre.UTF8 flag is added to user flags.
+Alternatively, an existing UTF-8 byte string can be used and the pcre.UTF8
+flag can be set manually.  If a byte string is used without this flag, PCRE
+works in single-byte mode.
+
+If PCRE works in UTF-8 mode, the matched strings can either be unicode or
+UTF-8 byte strings.  Trying to use byte strings that aren't valid UTF-8
+will result in PCREError exception.
+
+The general advice is to be consistent and use the same types for patterns
+and matched data.
+
 
 License
 -------

@@ -31,12 +31,15 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <pcre.h>
 
+#define NAMEENTRY_INDEX(entry) ((entry[0] << 8) | entry[1])
+#define NAMEENTRY_NAME(entry) (entry + 2)
+
 static PyObject *PyExc_PCREError;
 
 typedef struct {
     PyObject_HEAD
     PyObject *pattern; /* str or unicode as passed in */
-    pcre16 *code;
+    pcre *code;
     int options;
     int groups; /* capture count */
     PyObject *groupindex; /* name->index dict */
@@ -45,63 +48,97 @@ typedef struct {
 typedef struct {
     PyObject_HEAD
     PyPatternObject *pattern;
-    PyObject *string; /* str or unicode as passed in */
+    PyObject *subject; /* str or unicode as passed in */
+    PyObject *string; /* str as passed to pcre_exec */
     int *ovector;
     int lastindex;
     int startpos; /* after boundary checks */
     int endpos; /* after boundary checks */
 } PyMatchObject;
 
-/* Returns a new reference to a str object with UTF-16 data.
- * The str always has a BOM at the beginning.
+/* Translates a UTF-8 string byte offset into a character index..
  */
-static PyObject *
-as_utf16(PyObject *op)
+static int
+utf8_offset_to_index(PyObject *op, int offset)
 {
-    if (PyUnicode_Check(op))
-        return PyUnicode_AsUTF16String(op);
+    int i, length, index;
+    const char *data;
+    char c;
 
-    if (PyString_Check(op)) {
-        PyObject *t = PyUnicode_DecodeLatin1(PyString_AS_STRING(op),
-                PyString_GET_SIZE(op), NULL);
-        if (t == NULL)
-            return NULL;
-        op = PyUnicode_AsUTF16String(t);
-        Py_DECREF(t);
-        return op;
+    data = PyString_AS_STRING(op);
+    length = PyString_GET_SIZE(op);
+    for (i = 0, index = 0; i < length && i != offset; ++i) {
+        if ((data[i] & 0xc0) != 0x80)
+            ++index;
     }
-
-    PyErr_SetString(PyExc_TypeError, "unicode or str expected");
-    return NULL;
+    return index;
 }
 
-/* Returns a new reference to a unicode object from UTF16 data.
+/* Translates a character index into a UTF-8 string byte offset.
+ */
+static int
+utf8_index_to_offset(PyObject *op, int index)
+{
+    int i, length;
+    const char *data;
+    char c;
+
+    data = PyString_AS_STRING(op);
+    length = PyString_GET_SIZE(op);
+    for (i = 0; i < length && index > 0; ++i) {
+        if ((data[i] & 0xc0) != 0x80)
+            --index;
+    }
+    return i;
+}
+
+/* Translates supported pattern/subject objects to a str object.
+ * Unicode objects are encoded using UTF-8 and PCRE_UTF8 is set
+ * in *options.  Returns a new reference.
  */
 static PyObject *
-from_utf16(PCRE_SPTR16 s)
+obj_as_str(PyObject *op, int *options)
 {
-    Py_ssize_t i;
+    if (PyUnicode_Check(op)) {
+        if (options)
+            *options |= PCRE_UTF8;
+        return PyUnicode_AsUTF8String(op);
+    }
 
-    for (i = 0; s[i]; ++i) {}
-    return PyUnicode_DecodeUTF16((char *)s, i << 1, NULL, NULL);
+    if (PyString_Check(op)) {
+        Py_INCREF(op);
+        return op;
+    }
+}
+
+/* Converts a null-terminated C-string to either a str or unicode
+ * depending on unicode argument.  For unicode assumes the string
+ * is in UTF-8.  Returns a new reference.
+ */
+static PyObject *
+str_as_obj(const char *s, int unicode)
+{
+    if (unicode)
+        return PyUnicode_DecodeUTF8(s, strlen(s), NULL);
+    return PyString_FromString(s);
 }
 
 /* Translates a group index into a group name (unicode).
  * If not found, returns the default object.  Returns new reference.
  */
 static PyObject *
-group_name_by_index(pcre16 *code, int index, PyObject *def)
+group_name_by_index(pcre *code, int index, int unicode, PyObject *def)
 {
     int i, count, size;
-    PCRE_SPTR16 table;
+    char *table;
 
-    if (pcre16_fullinfo(code, NULL, PCRE_INFO_NAMECOUNT, &count) == 0
-            && pcre16_fullinfo(code, NULL, PCRE_INFO_NAMEENTRYSIZE, &size) == 0
-            && pcre16_fullinfo(code, NULL, PCRE_INFO_NAMETABLE, &table) == 0)
+    if (pcre_fullinfo(code, NULL, PCRE_INFO_NAMECOUNT, &count) == 0
+            && pcre_fullinfo(code, NULL, PCRE_INFO_NAMEENTRYSIZE, &size) == 0
+            && pcre_fullinfo(code, NULL, PCRE_INFO_NAMETABLE, &table) == 0)
     {
         for (i = 0; i < count; ++i) {
-            if (table[0] == index)
-                return from_utf16(table + 1);
+            if (NAMEENTRY_INDEX(table) == index)
+                return str_as_obj(NAMEENTRY_NAME(table), unicode);
             table += size;
         }
     }
@@ -135,7 +172,7 @@ set_pcre_error(int rc)
 static PyObject *
 getsubstr(PyMatchObject *op, Py_ssize_t index, PyObject *def)
 {
-    int pos;
+    int pos, endpos;
 
     if (index < 0 || index > op->pattern->groups) {
         PyErr_SetString(PyExc_IndexError, "no such group");
@@ -143,12 +180,18 @@ getsubstr(PyMatchObject *op, Py_ssize_t index, PyObject *def)
     }
 
     pos = op->ovector[index * 2];
+    endpos = op->ovector[index * 2 + 1];
     if (pos < 0) {
         Py_INCREF(def);
         return def;
     }
 
-    return PySequence_GetSlice(op->string, pos, op->ovector[index * 2 + 1]);
+    if (PyUnicode_Check(op->subject)) {
+        pos = utf8_offset_to_index(op->string, pos);
+        endpos = utf8_offset_to_index(op->string, endpos);
+    }
+
+    return PySequence_GetSlice(op->subject, pos, endpos);
 }
 
 /* Same as getsubstr() but group index is specifed as an object.
@@ -174,8 +217,9 @@ static void
 match_dealloc(PyMatchObject *self)
 {
     Py_XDECREF(self->pattern);
+    Py_XDECREF(self->subject);
     Py_XDECREF(self->string);
-    pcre16_free(self->ovector);
+    pcre_free(self->ovector);
     Py_TYPE(self)->tp_free(self);
 }
 
@@ -321,7 +365,8 @@ match_groupdict(PyMatchObject *self, PyObject *args)
 static PyObject *
 match_lastgroup_getter(PyMatchObject *self, void *closure)
 {
-    return group_name_by_index(self->pattern->code, self->lastindex, Py_None);
+    return group_name_by_index(self->pattern->code, self->lastindex,
+            PyUnicode_Check(self->pattern->pattern), Py_None);
 }
 
 static const PyMethodDef match_methods[] = {
@@ -340,7 +385,7 @@ static const PyGetSetDef match_getset[] = {
 };
 
 static const PyMemberDef match_members[] = {
-    {"string",      T_OBJECT,   offsetof(PyMatchObject, string),    READONLY},
+    {"string",      T_OBJECT,   offsetof(PyMatchObject, subject),    READONLY},
     {"re",          T_OBJECT,   offsetof(PyMatchObject, pattern),   READONLY},
     {"pos",         T_INT,      offsetof(PyMatchObject, startpos),  READONLY},
     {"endpos",      T_INT,      offsetof(PyMatchObject, endpos),    READONLY},
@@ -393,8 +438,8 @@ static PyTypeObject PyMatch_Type = {
 
 /* Creates a new Match instance.  Takes ownership of ovector. */
 static PyObject *
-new_match(PyPatternObject *pattern, PyObject *string, int startpos, int endpos,
-    int *ovector, int captures)
+new_match(PyPatternObject *pattern, PyObject *subject, PyObject *string,
+    int startpos, int endpos, int *ovector, int captures)
 {
     PyTypeObject *type = &PyMatch_Type;
     PyMatchObject *self;
@@ -426,7 +471,8 @@ new_match(PyPatternObject *pattern, PyObject *string, int startpos, int endpos,
     if (self) {
         self->pattern = pattern;
         Py_INCREF(pattern);
-
+        self->subject = subject;
+        Py_INCREF(subject);
         self->string = string;
         Py_INCREF(string);
 
@@ -458,29 +504,29 @@ new_match(PyPatternObject *pattern, PyObject *string, int startpos, int endpos,
 
 /* Create a mapping from group names to group indexes. */
 static PyObject *
-make_groupindex(pcre16 *code)
+make_groupindex(pcre *code, int unicode)
 {
     PyObject *dict;
     int rc, index, count, size;
-    PCRE_SPTR16 table;
+    char *table;
     PyObject *key, *value;
 
     dict = PyDict_New();
     if (dict == NULL)
         return NULL;
 
-    if (pcre16_fullinfo(code, NULL, PCRE_INFO_NAMECOUNT, &count) != 0
-            || pcre16_fullinfo(code, NULL, PCRE_INFO_NAMEENTRYSIZE, &size) != 0
-            || pcre16_fullinfo(code, NULL, PCRE_INFO_NAMETABLE, &table) != 0)
+    if (pcre_fullinfo(code, NULL, PCRE_INFO_NAMECOUNT, &count) != 0
+            || pcre_fullinfo(code, NULL, PCRE_INFO_NAMEENTRYSIZE, &size) != 0
+            || pcre_fullinfo(code, NULL, PCRE_INFO_NAMETABLE, &table) != 0)
         return dict;
 
     for (index = 0; index < count; ++index) {
-        key = from_utf16(table + 1);
+        key = str_as_obj(NAMEENTRY_NAME(table), unicode);
         if (key == NULL) {
             Py_DECREF(dict);
             return NULL;
         }
-        value = PyInt_FromLong(table[0]);
+        value = PyInt_FromLong(NAMEENTRY_INDEX(table));
         if (value == NULL) {
             Py_DECREF(key);
             Py_DECREF(dict);
@@ -502,7 +548,7 @@ make_groupindex(pcre16 *code)
 static PyObject *
 pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
-    PyObject *pattern, *utf16;
+    PyObject *pattern, *string;
     int options = 0;
     const char *err = NULL;
     int rc;
@@ -528,13 +574,13 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         pattern = self->pattern;
     }
 
-    utf16 = as_utf16(pattern);
-    if (utf16 == NULL)
+    string = obj_as_str(pattern, &options);
+    if (string == NULL)
         return NULL;
 
     self = (PyPatternObject *)type->tp_alloc(type, 0);
     if (self == NULL) {
-        Py_DECREF(utf16);
+        Py_DECREF(string);
         return NULL;
     }
 
@@ -542,10 +588,10 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     Py_INCREF(pattern);
 
     /* Compile the regex. */
-    self->code = pcre16_compile((PCRE_SPTR16)PyString_AS_STRING(utf16) + 1, options,
+    self->code = pcre_compile(PyString_AS_STRING(string), options,
             &err, &rc, NULL);
 
-    Py_DECREF(utf16);
+    Py_DECREF(string);
 
     if (self->code == NULL) {
         Py_DECREF(self);
@@ -554,16 +600,16 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     }
     
     /* get effective options and number of capturing groups */
-    rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
+    rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
     if (rc == 0)
-        rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
+        rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
     if (rc != 0) {
         Py_DECREF(self);
         return set_pcre_error(rc);
     }
 
     /* create a dict mapping named group names to their indexes */
-    self->groupindex = make_groupindex(self->code);
+    self->groupindex = make_groupindex(self->code, PyUnicode_Check(pattern));
     if (self->groupindex == NULL) {
         Py_DECREF(self);
         return NULL;
@@ -577,7 +623,7 @@ pattern_dealloc(PyPatternObject *self)
 {
     Py_XDECREF(self->groupindex);
     Py_XDECREF(self->pattern);
-    pcre16_free(self->code);
+    pcre_free(self->code);
     Py_TYPE(self)->tp_free(self);
 }
 
@@ -587,11 +633,11 @@ pattern_dealloc(PyPatternObject *self)
 static PyObject *
 pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
 {
+    PyObject *subject;
     PyObject *string;
-    PyObject *utf16;
+    Py_ssize_t length;
     int *ovector;
     int ovecsize;
-    int length;
     int rc;
     int pos = -1;
     int endpos = -1;
@@ -600,52 +646,61 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
     static const char *const kwlist[] = {"string", "pos", "endpos", "flags", NULL};
     
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|iii:__call__", (char **)kwlist,
-            &string, &pos, &endpos, &options))
+            &subject, &pos, &endpos, &options))
         return NULL;
 
-    length = PySequence_Length(string);
-    if (length < 0)
+    /* Convert argument to str. */
+    string = obj_as_str(subject, NULL);
+    if (string == NULL)
         return NULL;
+
+    length = PyString_GET_SIZE(string);
     if (pos < 0)
         pos = 0;
-    if (endpos < 0)
+    if (endpos < 0 || endpos > length)
         endpos = length;
-    if (pos > endpos || endpos > length)
-        Py_RETURN_NONE;
 
-    utf16 = as_utf16(string);
-    if (utf16 == NULL)
-        return NULL;
+    if (PyUnicode_Check(subject)) {
+        pos = utf8_index_to_offset(string, pos);
+        endpos = utf8_index_to_offset(string, endpos);
+    }
+
+    if (pos > endpos) {
+        Py_DECREF(string);
+        Py_RETURN_NONE;
+    }
 
     ovecsize = (self->groups + 1) * 6;
-    ovector = pcre16_malloc(ovecsize * sizeof(int));
+    ovector = pcre_malloc(ovecsize * sizeof(int));
     if (ovector == NULL) {
-        Py_DECREF(utf16);
+        Py_DECREF(string);
         PyErr_NoMemory();
         return NULL;
     }
 
     /* Perform the search. */
-    rc = pcre16_exec(self->code, NULL, (PCRE_SPTR16)PyString_AS_STRING(utf16) + 1,
+    rc = pcre_exec(self->code, NULL, PyString_AS_STRING(string),
             endpos, pos, options, ovector, ovecsize);
 
-    Py_DECREF(utf16);
-
     if (rc > 0) {
-        PyObject *match = new_match(self, string, pos, endpos, ovector, rc);
-        if (match == NULL)
-            pcre16_free(ovector);
-        return match;
+        /* Create the match instance. */
+        PyObject *match = new_match(self, subject, string,
+                pos, endpos, ovector, rc);
+        if (match)
+            return match;
     }
 
-    pcre16_free(ovector);
+    Py_DECREF(string);
+    pcre_free(ovector);
 
-    if (rc == PCRE_ERROR_NOMATCH)
-        Py_RETURN_NONE;
-    else if (rc == 0)
-        PyErr_SetString(PyExc_RuntimeError, "vector overflow");
-    else
-        set_pcre_error(rc);
+    if (!PyErr_Occurred()) {
+        if (rc == PCRE_ERROR_NOMATCH)
+            Py_RETURN_NONE;
+        else if (rc == 0)
+            PyErr_SetString(PyExc_RuntimeError, "vector overflow");
+        else
+            set_pcre_error(rc);
+    }
     return NULL;
 }
 
@@ -656,7 +711,7 @@ pattern_dumps(PyPatternObject *self)
     size_t size;
     int rc;
 
-    rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_SIZE, &size);
+    rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_SIZE, &size);
     if (rc != 0)
         return set_pcre_error(rc);
     return PyString_FromStringAndSize((char *)self->code, size);
@@ -678,7 +733,7 @@ pattern_loads(PyTypeObject *type, PyObject *args)
     if (self == NULL)
         return NULL;
 
-    self->code = pcre16_malloc(length);
+    self->code = pcre_malloc(length);
     if (self->code == NULL) {
         Py_DECREF(self);
         PyErr_NoMemory();
@@ -693,16 +748,16 @@ pattern_loads(PyTypeObject *type, PyObject *args)
     Py_INCREF(Py_None);
 
     /* get options and number of capturing groups */
-    rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
+    rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
     if (rc == 0)
-        rc = pcre16_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
+        rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
     if (rc != 0) {
         Py_DECREF(self);
         return set_pcre_error(rc);
     }
 
     /* create a dict mapping named group names to their indexes */
-    self->groupindex = make_groupindex(self->code);
+    self->groupindex = make_groupindex(self->code, 0);
     if (self->groupindex == NULL) {
         Py_DECREF(self);
         return NULL;
@@ -775,7 +830,7 @@ static PyTypeObject PyPattern_Type = {
 static PyObject *
 version(PyObject *self)
 {
-    return PyString_FromString(pcre16_version());
+    return PyString_FromString(pcre_version());
 }
 
 static const PyMethodDef methods[] = {
@@ -810,4 +865,5 @@ init_pcre(void)
     PyModule_AddIntConstant(mod, "DOTALL", PCRE_DOTALL);
     PyModule_AddIntConstant(mod, "UNICODE", PCRE_UCP);
     PyModule_AddIntConstant(mod, "ANCHORED", PCRE_ANCHORED);
+    PyModule_AddIntConstant(mod, "UTF8", PCRE_UTF8);
 }
