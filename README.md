@@ -21,7 +21,7 @@ After making sure all dependencies are installed, building
 and installation should be as simple as:
 
 ```
-$ python setup.py build
+$ python setup.py build install
 ```
 
 
@@ -100,7 +100,9 @@ Most of the time such libraries can be sped up by simply replacing
 Todo
 ----
 
-* `re`-style substitution (for backward compatibility)
+IMHO, the `str.format()` substitution makes more sense than `re`-style
+`\1` and `\g<name>` but for backward compatibility it would be good to
+support the old style as well.
 
 
 License
