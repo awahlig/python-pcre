@@ -64,24 +64,21 @@ Unicode handling
 ----------------
 
 python-pcre internally uses the 8-bit interface of the PCRE library.
-When a unicode object is used as pattern, it is first encoded using UTF-8
-before it is passed to PCRE.  Also, pcre.UTF8 flag is added to user flags.
+The library can operate either on simple 8-bit characters or in UTF-8 mode.
 
-Alternatively, an existing UTF-8 byte string can be used and the pcre.UTF8
-flag can be set manually.  If a byte string is used without this flag, PCRE
-works in single-byte mode.
+The mode is selected when a pattern is compiled by adding `pcre.UTF8` to
+the flags argument.  When in UTF-8 mode, the PCRE library expects both pattern
+and the subject string to be valid UTF-8 strings.  This is what python-pcre
+requires when Python (binary) string objects are used.
 
-The most important difference between the two is the handling of start and
-end offsets when matching.  For unicode, they are expressed in characters,
-for UTF-8 byte strings, in bytes.  In the latter case they must not point
-in the middle of multibyte characters or else a PCREError exception is raised.
+python-pcre also allows unicode strings to be specified and it internally
+converts them to UTF-8 strings before calling PCRE APIs.  If a unicode string
+is specified when compiling a pattern, the UTF-8 flag is enabled automatically.
 
-If PCRE works in UTF-8 mode, the strings used when matching can either be
-unicode or UTF-8 byte strings.  Trying to use byte strings that aren't valid
-UTF-8 will result in PCREError exception.
-
-The general rule to follow is to be consistent and use the same types for
-patterns and matched strings.
+When matching, the start/end offsets and offsets returned by `start()`,
+`end()` and `span()` are always indexes of the specified subject string.
+python-pcre takes care of any needed fixups resulting from internal UTF-8
+conversions.
 
 
 Why

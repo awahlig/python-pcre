@@ -56,7 +56,7 @@ typedef struct {
     int endpos; /* after boundary checks */
 } PyMatchObject;
 
-/* Translates a UTF-8 string byte offset into a character index..
+/* Converts a UTF-8 string byte offset into a character index.
  */
 static int
 utf8_offset_to_index(PyObject *op, int offset)
@@ -73,7 +73,7 @@ utf8_offset_to_index(PyObject *op, int offset)
     return index;
 }
 
-/* Translates a character index into a UTF-8 string byte offset.
+/* Converts a character index into a UTF-8 string byte offset.
  */
 static int
 utf8_index_to_offset(PyObject *op, int index)
@@ -90,7 +90,7 @@ utf8_index_to_offset(PyObject *op, int index)
     return i;
 }
 
-/* Translates supported pattern/subject objects to a str object.
+/* Converts supported pattern/subject objects into a str object.
  * Unicode objects are encoded using UTF-8 and PCRE_UTF8 is set
  * in *options.  Returns a new reference.
  */
@@ -124,8 +124,8 @@ str_as_obj(const char *s, int unicode)
     return PyString_FromString(s);
 }
 
-/* Translates a group index into a group name (unicode).
- * If not found, returns the default object.  Returns new reference.
+/* Converts a group index into a group name.  If not found, returns
+ * the default object.  Returns new reference.
  */
 static PyObject *
 group_name_by_index(pcre *code, int index, int unicode, PyObject *def)
@@ -148,6 +148,8 @@ group_name_by_index(pcre *code, int index, int unicode, PyObject *def)
     return def;
 }
 
+/* Sets a PCREError exception.
+ */
 static PyObject *
 set_pcre_error(int rc)
 {
