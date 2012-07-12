@@ -167,51 +167,70 @@ set_pcre_error(int rc)
  * Match
  */
 
-/* Slices the subject string using indexes from given group.
- * If group has no match, returns the default object.  Returns new reference.
+/* Retrieves offsets into the subject object for given group.  Both
+ * pos and endpos can be NULL if not used.  Returns 0 if successful
+ * or sets an exception and returns -1 in case of an error.
+ */
+static int
+getspan(PyMatchObject *op, Py_ssize_t index, int *pos, int *endpos)
+{
+    if (index < 0 || index > op->pattern->groups) {
+        PyErr_SetString(PyExc_IndexError, "no such group");
+        return -1;
+    }
+
+    if (pos)
+        *pos = op->ovector[index * 2];
+    if (endpos)
+        *endpos = op->ovector[index * 2 + 1];
+
+    /* If subject is unicode (which had to be encoded to UTF-8 for
+     * PCRE) then offsets must be fixed-up.
+     */
+    if (PyUnicode_Check(op->subject)) {
+        if (pos && *pos >= 0)
+            *pos = utf8_offset_to_index(op->string, *pos);
+        if (endpos && *endpos >= 0)
+            *endpos = utf8_offset_to_index(op->string, *endpos);
+    }
+
+    return 0;
+}
+
+/* Slices the subject string using offsets from given group. If group
+ * has no match, returns the default object.  Returns new reference
+ * or sets an exception and returns NULL in case of an error.
  */
 static PyObject *
-getsubstr(PyMatchObject *op, Py_ssize_t index, PyObject *def)
+getslice(PyMatchObject *op, Py_ssize_t index, PyObject *def)
 {
     int pos, endpos;
 
-    if (index < 0 || index > op->pattern->groups) {
-        PyErr_SetString(PyExc_IndexError, "no such group");
+    if (getspan(op, index, &pos, &endpos) < 0)
         return NULL;
-    }
 
-    pos = op->ovector[index * 2];
-    endpos = op->ovector[index * 2 + 1];
-    if (pos < 0) {
-        Py_INCREF(def);
-        return def;
-    }
+    if (pos >= 0 && endpos >= 0)
+        return PySequence_GetSlice(op->subject, pos, endpos);
 
-    if (PyUnicode_Check(op->subject)) {
-        pos = utf8_offset_to_index(op->string, pos);
-        endpos = utf8_offset_to_index(op->string, endpos);
-    }
-
-    return PySequence_GetSlice(op->subject, pos, endpos);
+    Py_INCREF(def);
+    return def;
 }
 
-/* Same as getsubstr() but group index is specifed as an object.
- * This can be an int/long index or str/unicode group name.
+/* Converts an object into group index or returns -1 if object is
+ * not supported.  Supports int/long indexes and str/unicode
+ * group names.
  */
-static PyObject *
-getsubstro(PyMatchObject *op, PyObject *index, PyObject *def)
+static Py_ssize_t
+getindex(PyMatchObject *op, PyObject *index)
 {
-    Py_ssize_t i = -1;
-
     if (PyInt_Check(index) || PyLong_Check(index))
-        i = PyInt_AsSsize_t(index);
-    else {
-        index = PyDict_GetItem(op->pattern->groupindex, index);
-        if (index)
-            return getsubstro(op, index, def);
-    }
+        return PyInt_AsSsize_t(index);
 
-    return getsubstr(op, i, def);
+    index = PyDict_GetItem(op->pattern->groupindex, index);
+    if (index)
+        return getindex(op, index);
+
+    return -1;
 }
 
 static void
@@ -233,18 +252,21 @@ match_group(PyMatchObject *self, PyObject *args)
     size = PyTuple_GET_SIZE(args);
     switch (size) {
         case 0: /* no args -- return the whole match */
-            result = getsubstr(self, 0, Py_None);
+            result = getslice(self, 0, Py_None);
             break;
         case 1: /* one arg -- return a single slice */
-            result = getsubstro(self, PyTuple_GET_ITEM(args, 0), Py_None);
+            result = getslice(self,
+                    getindex(self, PyTuple_GET_ITEM(args, 0)),
+                    Py_None);
             break;
         default: /* more than one arg -- return a tuple of slices */
             result = PyTuple_New(size);
             if (result == NULL)
                 return NULL;
             for (i = 0; i < size; ++i) {
-                PyObject *item = getsubstro(self,
-                        PyTuple_GET_ITEM(args, i), Py_None);
+                PyObject *item = getslice(self,
+                        getindex(self, PyTuple_GET_ITEM(args, i)),
+                        Py_None);
                 if (item == NULL) {
                     Py_DECREF(result);
                     return NULL;
@@ -259,50 +281,46 @@ match_group(PyMatchObject *self, PyObject *args)
 static PyObject *
 match_start(PyMatchObject *self, PyObject *args)
 {
-    int index = 0;
+    PyObject *index = NULL;
+    int pos;
 
-    if (!PyArg_ParseTuple(args, "|i:start", &index))
+    if (!PyArg_UnpackTuple(args, "start", 0, 1, &index))
         return NULL;
 
-    if (index < 0 || index > self->pattern->groups) {
-        PyErr_SetString(PyExc_IndexError, "no such group");
+    if (getspan(self, index ? getindex(self, index) : 0, &pos, NULL) < 0)
         return NULL;
-    }
 
-    return PyInt_FromLong(self->ovector[index * 2]);
+    return PyInt_FromLong(pos);
 }
 
 static PyObject *
 match_end(PyMatchObject *self, PyObject *args)
 {
-    int index = 0;
+    PyObject *index = NULL;
+    int endpos;
 
-    if (!PyArg_ParseTuple(args, "|i:end", &index))
+    if (!PyArg_UnpackTuple(args, "end", 0, 1, &index))
         return NULL;
 
-    if (index < 0 || index > self->pattern->groups) {
-        PyErr_SetString(PyExc_IndexError, "no such group");
+    if (getspan(self, index ? getindex(self, index) : 0, NULL, &endpos) < 0)
         return NULL;
-    }
 
-    return PyInt_FromLong(self->ovector[index * 2 + 1]);
+    return PyInt_FromLong(endpos);
 }
 
 static PyObject *
 match_span(PyMatchObject *self, PyObject *args)
 {
-    int index = 0;
+    PyObject *index = NULL;
+    int pos, endpos;
 
-    if (!PyArg_ParseTuple(args, "|i:span", &index))
+    if (!PyArg_UnpackTuple(args, "span", 0, 1, &index))
         return NULL;
 
-    if (index < 0 || index > self->pattern->groups) {
-        PyErr_SetString(PyExc_IndexError, "no such group");
+    if (getspan(self, index ? getindex(self, index) : 0, &pos, &endpos) < 0)
         return NULL;
-    }
 
-    return Py_BuildValue("(ii)", self->ovector[index * 2],
-            self->ovector[index * 2 + 1]);
+    return Py_BuildValue("(ii)", pos, endpos);
 }
 
 static PyObject *
@@ -312,7 +330,7 @@ match_groups(PyMatchObject *self, PyObject *args)
     PyObject *def = Py_None;
     Py_ssize_t index;
 
-    if (!PyArg_ParseTuple(args, "|O:groups", &def))
+    if (!PyArg_UnpackTuple(args, "groups", 0, 1, &def))
         return NULL;
 
     result = PyTuple_New(self->pattern->groups);
@@ -320,7 +338,7 @@ match_groups(PyMatchObject *self, PyObject *args)
         return NULL;
 
     for (index = 1; index <= self->pattern->groups; ++index) {
-        PyObject *item = getsubstr(self, index, def);
+        PyObject *item = getslice(self, index, def);
         if (item == NULL) {
             Py_DECREF(result);
             return NULL;
@@ -338,7 +356,7 @@ match_groupdict(PyMatchObject *self, PyObject *args)
     Py_ssize_t pos;
     int rc;
 
-    if (!PyArg_ParseTuple(args, "|O:groupdict", &def))
+    if (!PyArg_UnpackTuple(args, "groupdict", 0, 1, &def))
         return NULL;
 
     dict = PyDict_New();
@@ -347,7 +365,7 @@ match_groupdict(PyMatchObject *self, PyObject *args)
 
     pos = 0;
     while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
-        value = getsubstro(self, value, def);
+        value = getslice(self, getindex(self, value), def);
         if (value == NULL) {
             Py_DECREF(dict);
             return NULL;
