@@ -31,27 +31,25 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <pcre.h>
 
-#define NAMEENTRY_INDEX(entry) ((entry[0] << 8) | entry[1])
-#define NAMEENTRY_NAME(entry) (entry + 2)
-
 static PyObject *PyExc_PCREError;
 
 typedef struct {
     PyObject_HEAD
     PyObject *pattern; /* str or unicode as passed in */
-    pcre *code;
-    int options;
+    pcre *code; /* compiled pattern */
+    int requested_options; /* options as passed in */
+    int options; /* effective options */
     int groups; /* capture count */
     PyObject *groupindex; /* name->index dict */
 } PyPatternObject;
 
 typedef struct {
     PyObject_HEAD
-    PyPatternObject *pattern;
+    PyPatternObject *pattern; /* pattern instance */
     PyObject *subject; /* str or unicode as passed in */
     PyObject *string; /* str as passed to pcre_exec */
-    int *ovector;
-    int lastindex;
+    int *ovector; /* output vector */
+    int lastindex; /* returned by pcre_exec */
     int startpos; /* after boundary checks */
     int endpos; /* after boundary checks */
 } PyMatchObject;
@@ -124,30 +122,6 @@ str_as_obj(const char *s, int unicode)
     return PyString_FromString(s);
 }
 
-/* Converts a group index into a group name.  If not found, returns
- * the default object.  Returns new reference.
- */
-static PyObject *
-group_name_by_index(pcre *code, int index, int unicode, PyObject *def)
-{
-    int i, count, size;
-    char *table;
-
-    if (pcre_fullinfo(code, NULL, PCRE_INFO_NAMECOUNT, &count) == 0
-            && pcre_fullinfo(code, NULL, PCRE_INFO_NAMEENTRYSIZE, &size) == 0
-            && pcre_fullinfo(code, NULL, PCRE_INFO_NAMETABLE, &table) == 0)
-    {
-        for (i = 0; i < count; ++i) {
-            if (NAMEENTRY_INDEX(table) == index)
-                return str_as_obj(NAMEENTRY_NAME(table), unicode);
-            table += size;
-        }
-    }
-
-    Py_INCREF(def);
-    return def;
-}
-
 /* Sets a PCREError exception.
  */
 static PyObject *
@@ -200,8 +174,7 @@ getspan(PyMatchObject *op, Py_ssize_t index, int *pos, int *endpos)
 }
 
 /* Slices the subject string using offsets from given group. If group
- * has no match, returns the default object.  Returns new reference
- * or sets an exception and returns NULL in case of an error.
+ * has no match, returns the default object.  Returns new reference.
  */
 static PyObject *
 getslice(PyMatchObject *op, Py_ssize_t index, PyObject *def)
@@ -386,8 +359,19 @@ match_groupdict(PyMatchObject *self, PyObject *args)
 static PyObject *
 match_lastgroup_getter(PyMatchObject *self, void *closure)
 {
-    return group_name_by_index(self->pattern->code, self->lastindex,
-            PyUnicode_Check(self->pattern->pattern), Py_None);
+    PyObject *key, *value;
+    Py_ssize_t pos;
+
+    /* Simple reverse lookup into groupindex. */
+    pos = 0;
+    while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
+        if (PyInt_Check(value) && PyInt_AS_LONG(value) == self->lastindex) {
+            Py_INCREF(key);
+            return key;
+        }
+    }
+
+    Py_RETURN_NONE;
 }
 
 static const PyMethodDef match_methods[] = {
@@ -457,10 +441,10 @@ static PyTypeObject PyMatch_Type = {
     0,                                  /* tp_free */
 };
 
-/* Creates a new Match instance.  Takes ownership of ovector. */
+/* Creates a new Match instance.  Takes ownership of ovector if successful. */
 static PyObject *
 new_match(PyPatternObject *pattern, PyObject *subject, PyObject *string,
-    int startpos, int endpos, int *ovector, int captures)
+    int startpos, int endpos, int *ovector, int lastindex)
 {
     PyTypeObject *type = &PyMatch_Type;
     PyMatchObject *self;
@@ -498,7 +482,7 @@ new_match(PyPatternObject *pattern, PyObject *subject, PyObject *string,
         Py_INCREF(string);
 
         self->ovector = ovector;
-        self->lastindex = captures - 1;
+        self->lastindex = lastindex;
         self->startpos = startpos;
         self->endpos = endpos;
 
@@ -542,12 +526,14 @@ make_groupindex(pcre *code, int unicode)
         return dict;
 
     for (index = 0; index < count; ++index) {
-        key = str_as_obj(NAMEENTRY_NAME(table), unicode);
+        /* Group name starts from the third byte. */
+        key = str_as_obj(table + 2, unicode);
         if (key == NULL) {
             Py_DECREF(dict);
             return NULL;
         }
-        value = PyInt_FromLong(NAMEENTRY_INDEX(table));
+        /* First two bytes contain the group index. */
+        value = PyInt_FromLong((table[0] << 8) | table[1]);
         if (value == NULL) {
             Py_DECREF(key);
             Py_DECREF(dict);
@@ -581,32 +567,34 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
             &pattern, &options))
         return NULL;
 
-    /* If pattern is already an instance of this type, check its options.  If they
-     * are the same as options requested for this pattern, simply return this instance
-     * instead of creating a new one.  If options differ, extract the regex string
-     * and create a new instance using this string and requested options.
+    /* If pattern is already an instance of this Pattern type, check the options
+     * that were used when it was compiled.  If they are the same as options requested
+     * for this pattern, simply return the existing instance instead of creating a new one.
      */
     if (Py_TYPE(pattern) == type) {
         self = (PyPatternObject *)pattern;
-        if (self->options == options) {
+        if (self->requested_options == options) {
             Py_INCREF(pattern);
             return pattern;
         }
+
+        /* Options differ, extract regex string and proceed to compilation. */
         pattern = self->pattern;
     }
 
-    string = obj_as_str(pattern, &options);
-    if (string == NULL)
-        return NULL;
-
     self = (PyPatternObject *)type->tp_alloc(type, 0);
-    if (self == NULL) {
-        Py_DECREF(string);
+    if (self == NULL)
         return NULL;
-    }
 
+    self->requested_options = options;
     self->pattern = pattern;
     Py_INCREF(pattern);
+
+    string = obj_as_str(pattern, &options);
+    if (string == NULL) {
+        Py_DECREF(self);
+        return NULL;
+    }
 
     /* Compile the regex. */
     self->code = pcre_compile(PyString_AS_STRING(string), options,
@@ -620,7 +608,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         return NULL;
     }
     
-    /* get effective options and number of capturing groups */
+    /* Get effective options and number of capturing groups. */
     rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
     if (rc == 0)
         rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
@@ -629,7 +617,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         return set_pcre_error(rc);
     }
 
-    /* create a dict mapping named group names to their indexes */
+    /* Create a dict mapping named group names to their indexes. */
     self->groupindex = make_groupindex(self->code, PyUnicode_Check(pattern));
     if (self->groupindex == NULL) {
         Py_DECREF(self);
@@ -681,6 +669,7 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
     if (endpos < 0 || endpos > length)
         endpos = length;
 
+    /* Fix-up offsets if obj_as_str had to encode subject into UTF-8 string. */
     if (PyUnicode_Check(subject)) {
         pos = utf8_index_to_offset(string, pos);
         endpos = utf8_index_to_offset(string, endpos);
@@ -691,7 +680,11 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
         Py_RETURN_NONE;
     }
 
-    ovecsize = (self->groups + 1) * 6;
+    /* Allocate the output vector.
+     * First two-thirds for returned group spans (all captures plus whole-match
+     * span), one-third as workspace for pcre_exec().
+     */
+    ovecsize = (self->groups + 1) * 3;
     ovector = pcre_malloc(ovecsize * sizeof(int));
     if (ovector == NULL) {
         Py_DECREF(string);
@@ -704,11 +697,13 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
             endpos, pos, options, ovector, ovecsize);
 
     if (rc > 0) {
-        /* Create the match instance. */
+        /* Create a Match instance.  Transfer ovector ownership. */
         PyObject *match = new_match(self, subject, string,
-                pos, endpos, ovector, rc);
-        if (match)
+                pos, endpos, ovector, rc - 1);
+        if (match) {
+            Py_DECREF(string);
             return match;
+        }
     }
 
     Py_DECREF(string);
@@ -717,15 +712,17 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
     if (!PyErr_Occurred()) {
         if (rc == PCRE_ERROR_NOMATCH)
             Py_RETURN_NONE;
-        else if (rc == 0)
-            PyErr_SetString(PyExc_RuntimeError, "vector overflow");
+        if (rc == 0)
+            PyErr_SetString(PyExc_RuntimeError, "pcre vector overflow");
         else
             set_pcre_error(rc);
     }
     return NULL;
 }
 
-/* Dumps the compiled regex into a string. */
+/* Serializes a pattern into a string.  Saved patterns aren't limited
+ * to Python -- they can be loaded by any PCRE-based solution.
+ */
 static PyObject *
 pattern_dumps(PyPatternObject *self)
 {
@@ -738,7 +735,9 @@ pattern_dumps(PyPatternObject *self)
     return PyString_FromStringAndSize((char *)self->code, size);
 }
 
-/* Loads a compiled regex from a string. */
+/* Loads a pattern from a string created using dumps().
+ * Note that "pattern" attribute is always set to None.
+ */
 static PyObject *
 pattern_loads(PyTypeObject *type, PyObject *args)
 {
@@ -768,7 +767,7 @@ pattern_loads(PyTypeObject *type, PyObject *args)
     self->pattern = Py_None;
     Py_INCREF(Py_None);
 
-    /* get options and number of capturing groups */
+    /* Get effective options and number of capturing groups. */
     rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
     if (rc == 0)
         rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
@@ -777,8 +776,11 @@ pattern_loads(PyTypeObject *type, PyObject *args)
         return set_pcre_error(rc);
     }
 
-    /* create a dict mapping named group names to their indexes */
-    self->groupindex = make_groupindex(self->code, 0);
+    /* Requested options not available so use effective options. */
+    self->requested_options = self->options;
+
+    /* Create a dict mapping named group names to their indexes. */
+    self->groupindex = make_groupindex(self->code, self->options & PCRE_UTF8);
     if (self->groupindex == NULL) {
         Py_DECREF(self);
         return NULL;
@@ -880,7 +882,7 @@ init_pcre(void)
     Py_INCREF(PyExc_PCREError);
     PyModule_AddObject(mod, "PCREError", PyExc_PCREError);
 
-    /* flags */
+    /* Flags */
     PyModule_AddIntConstant(mod, "IGNORECASE", PCRE_CASELESS);
     PyModule_AddIntConstant(mod, "MULTILINE", PCRE_MULTILINE);
     PyModule_AddIntConstant(mod, "DOTALL", PCRE_DOTALL);
