@@ -121,12 +121,16 @@ def escape(pattern):
 _alnum = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
 compile = Pattern
 loads = Pattern.loads
-error = _pcre.PCREError
+error = PCREError = _pcre.PCREError
 
+# Pattern flags
 I = IGNORECASE = _pcre.IGNORECASE
 M = MULTILINE = _pcre.MULTILINE
 S = DOTALL = _pcre.DOTALL
 U = UNICODE = _pcre.UNICODE
 UTF8 = _pcre.UTF8
+
+# Study flags
+JIT = _pcre.JIT
 
 __version__ = _pcre.version()
