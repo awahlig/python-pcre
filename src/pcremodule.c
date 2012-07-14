@@ -41,7 +41,7 @@ typedef struct {
     PyObject *pattern; /* str or unicode as passed in */
     PyObject *groupindex; /* name->index dict */
     pcre *code; /* compiled pattern */
-    pcre_extra *extra;
+    pcre_extra *extra; /* pcre_study result */
     int requested_options; /* options as passed in */
     int options; /* effective options */
     int groups; /* capture count */
@@ -564,16 +564,15 @@ static PyObject *
 pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
     PyObject *pattern, *string;
-    int requested_options = 0;
     const char *err = NULL;
-    int options, groups, rc;
+    int groups, rc, requested_options, options = 0;
     pcre* code;
     PyPatternObject *self;
 
     static const char *const kwlist[] = {"pattern", "flags", NULL};
     
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|i:__new__", (char **)kwlist,
-            &pattern, &requested_options))
+            &pattern, &options))
         return NULL;
 
     /* If pattern is already an instance of this Pattern type, check the options
@@ -591,7 +590,7 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         pattern = self->pattern;
     }
 
-    options = requested_options;
+    requested_options = options;
     string = obj_as_str(pattern, &options);
     if (string == NULL)
         return NULL;
