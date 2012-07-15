@@ -758,43 +758,47 @@ pattern_loads(PyTypeObject *type, PyObject *args)
     char *data;
     Py_ssize_t length;
     PyPatternObject *self;
-    int rc;
+    int rc, options, groups;
+    pcre *code;
 
     if (!PyArg_ParseTuple(args, "s#:loads", &data, &length))
         return NULL;
 
-    self = (PyPatternObject *)type->tp_alloc(type, 0);
-    if (self == NULL)
-        return NULL;
-
-    self->code = pcre_malloc(length);
-    if (self->code == NULL) {
-        Py_DECREF(self);
+    /* Allocate memory for the compiled regex. */
+    code = pcre_malloc(length);
+    if (code == NULL) {
         PyErr_NoMemory();
         return NULL;
     }
 
     /* Copy the regex. */
-    memcpy(self->code, data, length);
-
-    /* Pattern string is not available so use None. */
-    self->pattern = Py_None;
-    Py_INCREF(Py_None);
+    memcpy(code, data, length);
 
     /* Get effective options and number of capturing groups. */
-    rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_OPTIONS, &self->options);
+    rc = pcre_fullinfo(code, NULL, PCRE_INFO_OPTIONS, &options);
     if (rc == 0)
-        rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups);
+        rc = pcre_fullinfo(code, NULL, PCRE_INFO_CAPTURECOUNT, &groups);
     if (rc != 0) {
-        Py_DECREF(self);
+        pcre_free(code);
         return set_pcre_error(rc);
     }
 
-    /* Requested options not available so use effective options. */
-    self->requested_options = self->options;
+    /* Create the instance including ovector. */
+    self = (PyPatternObject *)type->tp_alloc(type, (groups + 1) * 3);
+    if (self == NULL) {
+        pcre_free(code);
+        return NULL;
+    }
+
+    /* Initialize fields. */
+    self->code = code;
+    self->options = self->requested_options = options;
+    self->groups = groups;
+    self->pattern = Py_None; /* not available */
+    Py_INCREF(Py_None);
 
     /* Create a dict mapping named group names to their indexes. */
-    self->groupindex = make_groupindex(self->code, self->options & PCRE_UTF8);
+    self->groupindex = make_groupindex(code, options & PCRE_UTF8);
     if (self->groupindex == NULL) {
         Py_DECREF(self);
         return NULL;
