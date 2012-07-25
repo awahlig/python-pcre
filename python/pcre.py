@@ -49,9 +49,10 @@ class Pattern(_pcre.Pattern):
         pos = 0
         n = 0
         for match in self.finditer(string):
-            output.append(string[pos:match.start()])
+            start, end = match.span()
+            output.append(string[pos:start])
             output.extend(match.groups())
-            pos = match.end()
+            pos = end
             n += 1
             if 0 < maxsplit <= n:
                 break
@@ -79,8 +80,9 @@ class Pattern(_pcre.Pattern):
         pos = 0
         n = 0
         for match in self.finditer(string):
-            output.extend((string[pos:match.start()], repl(match)))
-            pos = match.end()
+            start, end = match.span()
+            output.extend((string[pos:start], repl(match)))
+            pos = end
             n += 1
             if 0 < count <= n:
                 break

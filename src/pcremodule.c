@@ -34,6 +34,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /* Access to ovector placed "behind" an object. */
 #define OVECTOR(op, otype) ((int *)(((char *)op) + sizeof(otype)))
 
+/* Is c the start of a utf8 sequence? */
+#define ISUTF(c) (((c) & 0xC0) != 0x80)
+
 static PyObject *PyExc_PCREError;
 
 typedef struct {
@@ -56,40 +59,6 @@ typedef struct {
     int startpos; /* after boundary checks */
     int endpos; /* after boundary checks */
 } PyMatchObject;
-
-/* Converts a UTF-8 string byte offset into a character index.
- */
-static int
-utf8_offset_to_index(PyObject *op, int offset)
-{
-    int i, length, index;
-    const char *data;
-
-    data = PyString_AS_STRING(op);
-    length = PyString_GET_SIZE(op);
-    for (i = 0, index = 0; i < length && i != offset; ++i) {
-        if ((data[i] & 0xc0) != 0x80)
-            ++index;
-    }
-    return index;
-}
-
-/* Converts a character index into a UTF-8 string byte offset.
- */
-static int
-utf8_index_to_offset(PyObject *op, int index)
-{
-    int i, length;
-    const char *data;
-
-    data = PyString_AS_STRING(op);
-    length = PyString_GET_SIZE(op);
-    for (i = 0; i < length && index > 0; ++i) {
-        if ((data[i] & 0xc0) != 0x80)
-            --index;
-    }
-    return i;
-}
 
 /* Converts supported pattern/subject objects into a str object.
  * Unicode objects are encoded using UTF-8 and PCRE_UTF8 is set
@@ -165,14 +134,46 @@ getspan(PyMatchObject *op, Py_ssize_t index, int *pos, int *endpos)
     if (endpos)
         *endpos = ovector[index * 2 + 1];
 
+    /* Sanity check. */
+    if (pos && endpos && (*pos > *endpos) && (*endpos >= 0)) {
+        PyErr_SetString(PyExc_RuntimeError, "bad span");
+        return -1;
+    }
+
     /* If subject is unicode (which had to be encoded to UTF-8 for
-     * PCRE) then offsets must be fixed-up.
+     * PCRE) then UTF-8 byte offsets have to be converted to
+     * character offsets.
      */
     if (PyUnicode_Check(op->subject)) {
-        if (pos && *pos >= 0)
-            *pos = utf8_offset_to_index(op->string, *pos);
-        if (endpos && *endpos >= 0)
-            *endpos = utf8_offset_to_index(op->string, *endpos);
+        int charnum = 0, i = 0, offset;
+        char *str = PyString_AS_STRING(op->string);
+        int length = PyString_GET_SIZE(op->string);
+
+        /* endpos >= pos -- checked above */
+        if (pos && (*pos >= 0)) {
+            offset = *pos;
+            while ((i < offset) && (i < length)) {
+                (void)(ISUTF(str[++i]) || ISUTF(str[++i]) ||
+#ifdef Py_UNICODE_WIDE
+                       ISUTF(str[++i]) ||
+#endif
+                       ++i);
+                charnum++;
+            }
+            *pos = charnum;
+        }
+        if (endpos && (*endpos >= 0)) {
+            offset = *endpos;
+            while ((i < offset) && (i < length)) {
+                (void)(ISUTF(str[++i]) || ISUTF(str[++i]) ||
+#ifdef Py_UNICODE_WIDE
+                       ISUTF(str[++i]) ||
+#endif
+                       ++i);
+                charnum++;
+            }
+            *endpos = charnum;
+        }
     }
 
     return 0;
@@ -657,6 +658,7 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
     Py_ssize_t length;
     int rc, options = 0;
     int pos = -1, endpos = -1;
+    char *str;
 
     static const char *const kwlist[] = {"string", "pos", "endpos", "flags", NULL};
     
@@ -669,26 +671,49 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
     if (string == NULL)
         return NULL;
 
+    str = PyString_AS_STRING(string);
     length = PyString_GET_SIZE(string);
     if (pos < 0)
         pos = 0;
     if (endpos < 0 || endpos > length)
         endpos = length;
 
-    /* Fix-up offsets if obj_as_str had to encode subject into UTF-8 string. */
-    if (PyUnicode_Check(subject)) {
-        pos = utf8_index_to_offset(string, pos);
-        endpos = utf8_index_to_offset(string, endpos);
-    }
-
     if (pos > endpos) {
         Py_DECREF(string);
         Py_RETURN_NONE;
     }
 
+    /* If obj_as_str had to encode subject into UTF-8 string then convert
+     * character offsets into UTF-8 byte offsets.
+     */
+    if (PyUnicode_Check(subject)) {
+        int i = 0;
+
+        /* endpos >= pos -- checked above */
+        endpos -= pos;
+        while ((pos > 0) && (i < length)) {
+            (void)(ISUTF(str[++i]) || ISUTF(str[++i]) ||
+#ifdef Py_UNICODE_WIDE
+                   ISUTF(str[++i]) ||
+#endif
+                   ++i);
+            pos--;
+        }
+        pos = i;
+        while ((endpos > 0) && (i < length)) {
+            (void)(ISUTF(str[++i]) || ISUTF(str[++i]) ||
+#ifdef Py_UNICODE_WIDE
+                   ISUTF(str[++i]) ||
+#endif
+                   ++i);
+            endpos--;
+        }
+        endpos = i;
+    }
+
     /* Perform the search. */
-    rc = pcre_exec(self->code, self->extra, PyString_AS_STRING(string),
-            endpos, pos, options, OVECTOR(self, PyPatternObject), Py_SIZE(self));
+    rc = pcre_exec(self->code, self->extra, str, endpos, pos, options,
+            OVECTOR(self, PyPatternObject), Py_SIZE(self));
 
     /* Create the Match instance. */
     if (rc > 0)
