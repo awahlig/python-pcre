@@ -120,7 +120,7 @@ def escape(pattern):
     return pattern[:0].join(s)
 
 def convert_template(template, esc='\\', fmt='{%s}'):
-    # Converts tempates from "\1\g<id>" to "{1}{id}" format.
+    # Converts templates from "\1\g<id>" to "{1}{id}" format.
     o = []
     append = o.append
     for x in template.split(esc):
