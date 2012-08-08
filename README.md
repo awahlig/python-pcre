@@ -59,8 +59,8 @@ Example:
 ```
 Notice the `{1}` and escaped `{{` in repl string.
 
-The built-in re module would use `\1` and a raw string instead:
-`r'static PyObject*\npy_\1(void)\n{'`
+The built-in re module would use `\\1` instead:
+`'static PyObject*\npy_\\1(void)\n{'`
 
 The arguments used in `str.format()` call are:
 * all groups starting from group 0 (entire match) as positional arguments,
