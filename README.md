@@ -72,7 +72,7 @@ Example:
 
 ```python
 >>> pcre.convert_template('static PyObject*\npy_\\1(void)\n{')
-'static PyObject*\npy_{1}(void)\n{'
+'static PyObject*\npy_{1}(void)\n{{'
 ```
 
 

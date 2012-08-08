@@ -119,11 +119,12 @@ def escape(pattern):
             s[i] = '\\000' if c == '\000' else ('\\' + c)
     return pattern[:0].join(s)
 
-def convert_template(template, esc='\\', fmt='{%s}'):
+def convert_template(template, esc='\\'):
     # Converts templates from "\1\g<id>" to "{1}{id}" format.
     o = []
     append = o.append
-    for x in template.split(esc):
+    fmt='{%s}'
+    for x in template.replace('{', '{{').replace('}', '}}').split(esc):
         if x[:1].isdigit():
             append(fmt % x[0])
             x = x[1:]
