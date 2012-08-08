@@ -39,7 +39,17 @@ Differences:
 * pattern caching is not supported
 * buffer types are not supported as input (only str and unicode)
 
-Substitution example:
+For a comprehensive PCRE regex syntax you can visit PHP documentation:
+* http://php.net/manual/en/reference.pcre.pattern.syntax.php
+
+
+Substitution
+------------
+
+python-pcre uses `str.format()` substitution instead of the `re`-style
+`\1` and `\g<name>`.
+
+Example:
 
 ```python
 >>> pcre.sub(r'def\s+([a-zA-Z_][a-zA-Z_0-9]*)\s*\(\s*\):',
@@ -56,8 +66,14 @@ The arguments used in `str.format()` call are:
 * all groups starting from group 0 (entire match) as positional arguments,
 * all named groups as keyword arguments.
 
-For a comprehensive PCRE regex syntax you can visit PHP documentation:
-* http://php.net/manual/en/reference.pcre.pattern.syntax.php
+For backward compatibility a conversion function is provided.
+
+Example:
+
+```python
+>>> pcre.convert_template('static PyObject*\npy_\\1(void)\n{')
+'static PyObject*\npy_{1}(void)\n{'
+```
 
 
 Unicode handling
@@ -92,14 +108,6 @@ expressions at import time have long load-times on slower (embedded) systems.
 
 Most of the time such libraries can be sped up by simply replacing
 `import re` with `import pcre as re` (unless substitution is used).
-
-
-Todo
-----
-
-IMHO, the `str.format()` substitution makes more sense than `re`-style
-`\1` and `\g<name>` but for backward compatibility it would be good to
-support the old style as well.
 
 
 License
