@@ -38,17 +38,17 @@ class Pattern(_pcre.Pattern):
     # Tell _pcre.Pattern to use this subtype for match instances.
     _match_type = Match
 
-    def search(self, string, pos=-1, endpos=-1):
-        return self(string, pos, endpos)
+    def search(self, string, pos=-1, endpos=-1, flags=0):
+        return self(string, pos, endpos, flags)
 
-    def match(self, string, pos=-1, endpos=-1):
-        return self(string, pos, endpos, _pcre.ANCHORED)
+    def match(self, string, pos=-1, endpos=-1, flags=0):
+        return self(string, pos, endpos, flags | _pcre.ANCHORED)
 
-    def split(self, string, maxsplit=0):
+    def split(self, string, maxsplit=0, flags=0):
         output = []
         pos = 0
         n = 0
-        for match in self.finditer(string):
+        for match in self.finditer(string, flags=flags):
             start, end = match.span()
             output.append(string[pos:start])
             output.extend(match.groups())
@@ -59,27 +59,27 @@ class Pattern(_pcre.Pattern):
         output.append(string[pos:])
         return output
 
-    def findall(self, string, pos=-1, endpos=-1):
-        return [m.group() for m in self.finditer(string, pos, endpos)]
+    def findall(self, string, pos=-1, endpos=-1, flags=0):
+        return [m.group() for m in self.finditer(string, pos, endpos, flags)]
 
-    def finditer(self, string, pos=-1, endpos=-1):
+    def finditer(self, string, pos=-1, endpos=-1, flags=0):
         while 1:
-            match = self(string, pos, endpos)
+            match = self(string, pos, endpos, flags)
             if match is None:
                 break
             yield match
             pos = match.end()
 
-    def sub(self, repl, string, count=0):
-        return self.subn(repl, string, count)[0]
+    def sub(self, repl, string, count=0, flags=0):
+        return self.subn(repl, string, count, flags)[0]
 
-    def subn(self, repl, string, count=0):
+    def subn(self, repl, string, count=0, flags=0):
         if not hasattr(repl, '__call__'):
             repl = lambda match, tmpl=repl: match.expand(tmpl)
         output = []
         pos = 0
         n = 0
-        for match in self.finditer(string):
+        for match in self.finditer(string, flags=flags):
             start, end = match.span()
             output.extend((string[pos:start], repl(match)))
             pos = end
@@ -141,12 +141,13 @@ compile = Pattern
 loads = Pattern.loads
 error = PCREError = _pcre.PCREError
 
-# Pattern flags
+# Pattern and/or match flags
 I = IGNORECASE = _pcre.IGNORECASE
 M = MULTILINE = _pcre.MULTILINE
 S = DOTALL = _pcre.DOTALL
 U = UNICODE = _pcre.UNICODE
 UTF8 = _pcre.UTF8
+NO_UTF8_CHECK = _pcre.NO_UTF8_CHECK
 
 # Study flags
 JIT = _pcre.JIT

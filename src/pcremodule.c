@@ -61,17 +61,13 @@ typedef struct {
 } PyMatchObject;
 
 /* Converts supported pattern/subject objects into a str object.
- * Unicode objects are encoded using UTF-8 and PCRE_UTF8 is set
- * in *options.  Returns a new reference.
+ * Unicode objects are encoded using UTF-8.  Returns a new reference.
  */
 static PyObject *
-obj_as_str(PyObject *op, int *options)
+obj_as_str(PyObject *op)
 {
-    if (PyUnicode_Check(op)) {
-        if (options)
-            *options |= PCRE_UTF8;
+    if (PyUnicode_Check(op))
         return PyUnicode_AsUTF8String(op);
-    }
 
     if (PyString_Check(op)) {
         Py_INCREF(op);
@@ -591,10 +587,15 @@ pattern_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         pattern = self->pattern;
     }
 
-    requested_options = options;
-    string = obj_as_str(pattern, &options);
+    /* Convert pattern to str. */
+    string = obj_as_str(pattern);
     if (string == NULL)
         return NULL;
+
+    /* Force UTF-8 mode and disable validation if encoded internally. */
+    requested_options = options;
+    if (PyUnicode_Check(pattern))
+        options |= PCRE_UTF8 | PCRE_NO_UTF8_CHECK;
 
     /* Compile the regex. */
     code = pcre_compile(PyString_AS_STRING(string), options, &err, &rc, NULL);
@@ -667,7 +668,7 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
         return NULL;
 
     /* Convert argument to str. */
-    string = obj_as_str(subject, NULL);
+    string = obj_as_str(subject);
     if (string == NULL)
         return NULL;
 
@@ -709,6 +710,9 @@ pattern_call(PyPatternObject *self, PyObject *args, PyObject *kwds)
             endpos--;
         }
         endpos = i;
+
+        /* Encoded to UTF-8 internally -- disable validation. */
+        options |= PCRE_NO_UTF8_CHECK;
     }
 
     /* Perform the search. */
@@ -926,14 +930,13 @@ init_pcre(void)
     Py_INCREF(PyExc_PCREError);
     PyModule_AddObject(mod, "PCREError", PyExc_PCREError);
 
-    /* pcre_compile options */
+    /* pcre_compile and/or pcre_exec options */
     PyModule_AddIntConstant(mod, "IGNORECASE", PCRE_CASELESS);
     PyModule_AddIntConstant(mod, "MULTILINE", PCRE_MULTILINE);
     PyModule_AddIntConstant(mod, "DOTALL", PCRE_DOTALL);
     PyModule_AddIntConstant(mod, "UNICODE", PCRE_UCP);
     PyModule_AddIntConstant(mod, "UTF8", PCRE_UTF8);
-
-    /* pcre_exec options */
+    PyModule_AddIntConstant(mod, "NO_UTF8_CHECK", PCRE_NO_UTF8_CHECK);
     PyModule_AddIntConstant(mod, "ANCHORED", PCRE_ANCHORED);
 
     /* pcre_study options */
