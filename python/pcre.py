@@ -69,6 +69,8 @@ class Pattern(_pcre.Pattern):
                 break
             yield match
             pos = match.end()
+            if pos == match.start():
+                pos += 1
 
     def sub(self, repl, string, count=0, flags=0):
         return self.subn(repl, string, count, flags)[0]
