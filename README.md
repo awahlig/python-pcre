@@ -35,9 +35,10 @@ Differences:
 
 * slightly different regex syntax
 * `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1` substitution
-* `DEBUG`, `LOCALE`, `VERBOSE` flags are not supported
+* `DEBUG` and `LOCALE` flags are not supported
 * pattern caching is not supported
-* buffer types are not supported as input (only str and unicode)
+* only str and unicode are supported as input
+* scanner APIs are not supported
 
 For a comprehensive PCRE regex syntax you can visit PHP documentation:
 * http://php.net/manual/en/reference.pcre.pattern.syntax.php
@@ -114,7 +115,7 @@ License
 -------
 
 ```
-Copyright (c) 2012, Arkadiusz Wahlig
+Copyright (c) 2012-2014, Arkadiusz Wahlig
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

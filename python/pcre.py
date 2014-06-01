@@ -1,6 +1,6 @@
 """ python-pcre
 
-Copyright (c) 2012, Arkadiusz Wahlig
+Copyright (c) 2012-2014, Arkadiusz Wahlig
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -28,49 +28,52 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import _pcre
 
-
-class Match(_pcre.Match):
-    def expand(self, template):
-        return template.format(self.group(), *self.groups(), **self.groupdict())
-
-
 class Pattern(_pcre.Pattern):
-    # Tell _pcre.Pattern to use this subtype for match instances.
-    _match_type = Match
-
     def search(self, string, pos=-1, endpos=-1, flags=0):
-        return self(string, pos, endpos, flags)
+        try:
+            return Match(self, string, pos, endpos, flags)
+        except NoMatch:
+            pass
 
     def match(self, string, pos=-1, endpos=-1, flags=0):
-        return self(string, pos, endpos, flags | _pcre.ANCHORED)
+        try:
+            return Match(self, string, pos, endpos, flags | ANCHORED)
+        except NoMatch:
+            pass
 
     def split(self, string, maxsplit=0, flags=0):
         output = []
-        pos = 0
-        n = 0
+        pos = n = 0
         for match in self.finditer(string, flags=flags):
             start, end = match.span()
-            output.append(string[pos:start])
-            output.extend(match.groups())
-            pos = end
-            n += 1
-            if 0 < maxsplit <= n:
-                break
+            if start != end:
+                output.append(string[pos:start])
+                output.extend(match.groups())
+                pos = end
+                n += 1
+                if 0 < maxsplit <= n:
+                    break
         output.append(string[pos:])
         return output
 
     def findall(self, string, pos=-1, endpos=-1, flags=0):
-        return [m.group() for m in self.finditer(string, pos, endpos, flags)]
+        matches = self.finditer(string, pos, endpos, flags)
+        if self.groups == 0:
+            return [m.group() for m in matches]
+        if self.groups == 1:
+            return [m.groups('')[0] for m in matches]
+        return [m.groups('') for m in matches]
 
     def finditer(self, string, pos=-1, endpos=-1, flags=0):
-        while 1:
-            match = self(string, pos, endpos, flags)
-            if match is None:
-                break
-            yield match
-            pos = match.end()
-            if pos == match.start():
-                pos += 1
+        try:
+            while 1:
+                match = Match(self, string, pos, endpos, flags)
+                yield match
+                start, pos = match.span()
+                if pos == start:
+                    pos += 1
+        except NoMatch:
+            pass
 
     def sub(self, repl, string, count=0, flags=0):
         return self.subn(repl, string, count, flags)[0]
@@ -79,41 +82,59 @@ class Pattern(_pcre.Pattern):
         if not hasattr(repl, '__call__'):
             repl = lambda match, tmpl=repl: match.expand(tmpl)
         output = []
-        pos = 0
-        n = 0
+        pos = n = 0
         for match in self.finditer(string, flags=flags):
             start, end = match.span()
-            output.extend((string[pos:start], repl(match)))
-            pos = end
-            n += 1
-            if 0 < count <= n:
-                break
+            if not pos == start == end or pos == 0:
+                output.extend((string[pos:start], repl(match)))
+                pos = end
+                n += 1
+                if 0 < count <= n:
+                    break
         output.append(string[pos:])
         return string[:0].join(output), n
 
+    def __reduce__(self):
+        return (Pattern, (self.pattern, self.flags))
+
+class Match(_pcre.Match):
+    def expand(self, template):
+        return template.format(self.group(), *self.groups(), **self.groupdict())
+
+def compile(pattern, flags=0):
+    if isinstance(pattern, _pcre.Pattern):
+        if flags != 0:
+            raise ValueError('cannot process flags argument with a compiled pattern')
+        return pattern
+    return Pattern(pattern, flags)
 
 def match(pattern, string, flags=0):
-    return Pattern(pattern, flags).match(string)
+    return compile(pattern, flags).match(string)
 
 def search(pattern, string, flags=0):
-    return Pattern(pattern, flags).search(string)
+    return compile(pattern, flags).search(string)
 
 def split(pattern, string, maxsplit=0, flags=0):
-    return Pattern(pattern, flags).split(string, maxsplit)
+    return compile(pattern, flags).split(string, maxsplit)
 
 def findall(pattern, string, flags=0):
-    return Pattern(pattern, flags).findall(string)
+    return compile(pattern, flags).findall(string)
 
 def finditer(pattern, string, flags=0):
-    return Pattern(pattern, flags).finditer(string)
+    return compile(pattern, flags).finditer(string)
 
 def sub(pattern, repl, string, count=0, flags=0):
-    return Pattern(pattern, flags).sub(repl, string, count)
+    return compile(pattern, flags).sub(repl, string, count)
 
 def subn(pattern, repl, string, count=0, flags=0):
-    return Pattern(pattern, flags).subn(repl, string, count)
+    return compile(pattern, flags).subn(repl, string, count)
+
+def loads(data, pattern=None):
+    # Loads a pattern serialized with Pattern.dumps().
+    return Pattern(pattern, loads=data)
 
 def escape(pattern):
+    # Escapes a regular expression.
     s = list(pattern)
     alnum = _alnum
     for i, c in enumerate(pattern):
@@ -121,38 +142,31 @@ def escape(pattern):
             s[i] = '\\000' if c == '\000' else ('\\' + c)
     return pattern[:0].join(s)
 
-def convert_template(template, esc='\\'):
-    # Converts templates from "\1\g<id>" to "{1}{id}" format.
-    o = []
-    append = o.append
-    fmt='{%s}'
-    for x in template.replace('{', '{{').replace('}', '}}').split(esc):
-        if x[:1].isdigit():
-            append(fmt % x[0])
-            x = x[1:]
-        elif x[:2] == 'g<':
-            t, x = x.split('>', 1)
-            append(fmt % t[2:])
-        elif o:
-            append(esc)
-        append(x)
-    return ''.join(o)
+def escape_template(template):
+    # Escapes "{" and "}" characters in the template.
+    return template.replace('{', '{{').replace('}', '}}')
 
+def convert_template(template):
+    # Converts re template "\1\g<id>" to "{1}{id}" format.
+    repl = lambda m: '{%s}' % (m.group(1) or m.group(2))
+    return sub(r'\\(\d+)|\\g<(\w+)>', repl, escape_template(template))
 
 _alnum = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
-compile = Pattern
-loads = Pattern.loads
 error = PCREError = _pcre.PCREError
+NoMatch = _pcre.NoMatch
 
 # Pattern and/or match flags
 I = IGNORECASE = _pcre.IGNORECASE
 M = MULTILINE = _pcre.MULTILINE
 S = DOTALL = _pcre.DOTALL
 U = UNICODE = _pcre.UNICODE
+X = VERBOSE = _pcre.VERBOSE
+ANCHORED = _pcre.ANCHORED
 UTF8 = _pcre.UTF8
 NO_UTF8_CHECK = _pcre.NO_UTF8_CHECK
 
 # Study flags
 JIT = _pcre.JIT
 
-__version__ = _pcre.version()
+__version__ = '0.2'
+__pcre_version__ = _pcre.version()

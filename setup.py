@@ -2,7 +2,7 @@
 
 """ python-pcre
 
-Copyright (c) 2012, Arkadiusz Wahlig
+Copyright (c) 2012-2014, Arkadiusz Wahlig
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -31,11 +31,16 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 from distutils.core import setup, Extension
 
 
+_pcre = Extension('_pcre', ['src/pcremodule.c'],
+                  libraries=['pcre'],
+                  extra_compile_args=['-fno-strict-aliasing'])
+
+
 setup(name='python-pcre',
+      version='0.2',
       description='Python PCRE bindings',
       author='Arkadiusz Wahlig',
       url='https://github.com/awahlig/python-pcre',
       package_dir={'': 'python'},
       py_modules=['pcre'],
-      ext_modules=[Extension('_pcre', ['src/pcremodule.c'],
-                             libraries=['pcre'])])
+      ext_modules=[_pcre])
