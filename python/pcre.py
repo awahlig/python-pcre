@@ -148,9 +148,10 @@ def escape_template(template):
 
 def convert_re_template(template):
     # Converts re template "\1\g<id>" to "{1}{id}" format.
+    template = escape_template(template)
     repl = lambda m: '{%s}' % (m.group(1) or m.group(2))
-    return sub(r'\\(\d+)|\\g<(\w+)>', repl,
-        escape_template(template)).decode('string-escape')
+    t = sub(r'(?<!\\)\\(?:((?!0|[0-7]{3})\d{1,2})|g<(\w+)>)', repl, template)
+    return t.decode('unicode-escape' if isinstance(t, unicode) else 'string-escape')
 
 _alnum = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
 error = PCREError = _pcre.PCREError
