@@ -635,7 +635,6 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
 
     Py_CLEAR(self->string);
     self->string = string;
-    Py_INCREF(string);
 
     pcre_free(self->ovector);
     self->ovector = ovector;
