@@ -10,7 +10,7 @@ Requirements
 * PCRE (http://www.pcre.org)
 * Python (http://python.org/)
 
-So far tested with PCRE 8.30 and Python 2.7 only.
+Tested with PCRE 8.30, 8.35 and Python 2.7.
 
 
 Building and installation
