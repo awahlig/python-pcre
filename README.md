@@ -10,7 +10,7 @@ Requirements
 * PCRE (http://www.pcre.org)
 * Python (http://python.org/)
 
-Tested with PCRE 8.30, 8.35 and Python 2.7.
+Tested with Python 2.7 and PCRE 8.12, 8.30 and 8.35.
 
 
 Building and installation
@@ -34,9 +34,10 @@ The API is very similar to that of the built-in `re` module:
 Differences:
 
 * slightly different regex syntax
-* `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1` substitution
+* by default, `sub()`, `subn()`, `expand()` use `str.format()` instead of `\1` substitution
+  (see below)
 * `DEBUG` and `LOCALE` flags are not supported
-* pattern caching is not supported
+* patterns are not cached
 * only str and unicode are supported as input
 * scanner APIs are not supported
 
@@ -47,32 +48,45 @@ For a comprehensive PCRE regex syntax you can visit PHP documentation:
 Substitution
 ------------
 
-python-pcre uses `str.format()` substitution instead of the `re`-style
-`\1` and `\g<name>`.
+By default, python-pcre uses `str.format()` instead of the `re`-style `\1` and `\g<name>`
+substitution in calls to `sub()`, `subn()` and `expand()`.
 
 Example:
 
 ```python
+>>> import pcre
 >>> pcre.sub(r'def\s+([a-zA-Z_][a-zA-Z_0-9]*)\s*\(\s*\):',
-...          'static PyObject*\npy_{1}(void)\n{{',
+...          'static PyObject*\npy_{1}(void)\n{{',  # str.format() template
 ...          'def myfunc():')
 'static PyObject*\npy_myfunc(void)\n{'
 ```
-Notice the `{1}` and escaped `{{` in repl string.
+Note the `{1}` and escaped `{{` in repl string.
 
-The built-in re module would use `\\1` instead:
-`'static PyObject*\npy_\\1(void)\n{'`
+The built-in re module would use `\1` instead:
+`r'static PyObject*\npy_\1(void)\n{'`
 
-The arguments used in `str.format()` call are:
-* all groups starting from group 0 (entire match) as positional arguments,
-* all named groups as keyword arguments.
+This means that the repl string no longer needs to be a raw string and the library doesn't
+have to take care of escaped characters like `\n`.
 
-For backward compatibility a conversion function is provided.
+Referencing named groups is also easier -- `{name}` instead of somewhat clunky `\g<name>`.
 
-Example:
+It is also possible to reference the entire match using `{0}`, something that is not
+possible in `re` (`\0` is just a null-character).
+
+However, `re` template mode can be enabled if needed using `enable_re_template_mode()`.
+This might be useful if python-pcre is to be used with existing `re`-based code.
 
 ```python
->>> pcre.convert_template('static PyObject*\npy_\\1(void)\n{')
+>>> import pcre as re
+>>> re.enable_re_template_mode()
+>>> re.sub(r'(.)', r'[\1]', 'foo')
+'[f][o][o]'
+```
+
+A function to convert `re` templates is also provided for those one-off cases.
+
+```python
+>>> pcre.convert_re_template(r'static PyObject*\npy_\1(void)\n{')
 'static PyObject*\npy_{1}(void)\n{{'
 ```
 
@@ -96,19 +110,6 @@ When matching, the start/end offsets and offsets returned by `start()`,
 `end()` and `span()` are always indexes of the specified subject string.
 python-pcre takes care of any needed fixups resulting from internal UTF-8
 conversions.
-
-
-Why
----
-
-I created python-pcre because I was unsatisfied with the performance of
-regular expression parser in `re`.  PCRE has a fast parser written in C
-whereas `re`'s parser is written in pure Python (only the matching is done
-in C).  As a result, Python libraries building and compiling many regular
-expressions at import time have long load-times on slower (embedded) systems.
-
-Most of the time such libraries can be sped up by simply replacing
-`import re` with `import pcre as re` (unless substitution is used).
 
 
 License

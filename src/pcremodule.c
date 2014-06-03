@@ -31,6 +31,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <pcre.h>
 
+/* JIT was added in PCRE 8.20. */
+#ifndef PCRE_STUDY_JIT_COMPILE
+#define PCRE_STUDY_JIT_COMPILE 0
+#define pcre_free_study pcre_free
+#endif
+
 static PyObject *PyExc_PCREError;
 static PyObject *PyExc_NoMatch;
 

@@ -28,6 +28,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import _pcre
 
+__version__ = '0.3'
+__pcre_version__ = _pcre.version()
+
 class Pattern(_pcre.Pattern):
     def search(self, string, pos=-1, endpos=-1, flags=0):
         try:
@@ -101,6 +104,18 @@ class Match(_pcre.Match):
     def expand(self, template):
         return template.format(self.group(), *self.groups(), **self.groupdict())
 
+class REMatch(_pcre.Match):
+    def expand(self, template):
+        # Convert template, use str.format() and adjust exceptions to match
+        # the re module.  Group \0 is not supported in re so use None.
+        try:
+            return convert_re_template(template).format(None,
+                *self.groups(), **self.groupdict())
+        except IndexError:
+            raise PCREError(15, 'invalid group reference')
+        except KeyError:
+            raise IndexError('unknown group name')
+
 def compile(pattern, flags=0):
     if isinstance(pattern, _pcre.Pattern):
         if flags != 0:
@@ -148,10 +163,14 @@ def escape_template(template):
 
 def convert_re_template(template):
     # Converts re template "\1\g<id>" to "{1}{id}" format.
-    template = escape_template(template)
     repl = lambda m: '{%s}' % (m.group(1) or m.group(2))
-    t = sub(r'(?<!\\)\\(?:((?!0|[0-7]{3})\d{1,2})|g<(\w+)>)', repl, template)
+    t = REGEX_RE_TEMPLATE.sub(repl, escape_template(template))
     return t.decode('unicode-escape' if isinstance(t, unicode) else 'string-escape')
+
+def enable_re_template_mode():
+    # Makes calls to sub() take re templates instead of str.format() templates.
+    global Match
+    Match = REMatch
 
 _alnum = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
 error = PCREError = _pcre.PCREError
@@ -170,5 +189,5 @@ NO_UTF8_CHECK = _pcre.NO_UTF8_CHECK
 # Study flags
 JIT = _pcre.JIT
 
-__version__ = '0.2'
-__pcre_version__ = _pcre.version()
+# Used to convert re templates.
+REGEX_RE_TEMPLATE = compile(r'(?<!\\)\\(?:((?!0|[0-7]{3})\d{1,2})|g<(\w+)>)')
