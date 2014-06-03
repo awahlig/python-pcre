@@ -95,21 +95,20 @@ Unicode handling
 ----------------
 
 python-pcre internally uses the 8-bit interface of the PCRE library.
-The library can operate either on simple 8-bit characters or in UTF-8 mode.
+This interface can operate either on simple 8-bit characters or in UTF-8 mode.
 
 The mode is selected when a pattern is compiled by adding `pcre.UTF8` to
-the flags argument.  When in UTF-8 mode, the PCRE library expects both pattern
-and the subject string to be valid UTF-8 strings.  This is what python-pcre
-requires when Python (binary) string objects are used.
+the flags argument.  In UTF-8 mode, the PCRE library expects both the pattern
+and the matched subject string to be valid UTF-8 strings.
 
 python-pcre also allows unicode strings to be specified and it internally
 converts them to UTF-8 strings before calling PCRE APIs.  If a unicode string
 is specified when compiling a pattern, the UTF-8 flag is enabled automatically.
 
-When matching, the start/end offsets and offsets returned by `start()`,
-`end()` and `span()` are always indexes of the specified subject string.
-python-pcre takes care of any needed fixups resulting from internal UTF-8
-conversions.
+When internally converting a unicode subject string to UTF-8, any offsets exposed
+by python-pcre are also converted between byte and character offsets so that they
+are always indexes into the subject string specified by the caller, whether it's
+a byte string or a unicode string.
 
 
 License
