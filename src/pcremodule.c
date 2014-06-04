@@ -224,7 +224,7 @@ static int
 pattern_init(PyPatternObject *self, PyObject *args, PyObject *kwds)
 {
     PyObject *pattern, *loads = NULL, *groupindex;
-    int rc, options = 0;
+    int rc, groups, options = 0;
     pcre *code;
 
     static const char *const kwlist[] = {"pattern", "flags", "loads", NULL};
@@ -289,8 +289,8 @@ pattern_init(PyPatternObject *self, PyObject *args, PyObject *kwds)
     }
 
     /* Get effective options and number of capturing groups. */
-    if ((rc = pcre_fullinfo(code, NULL, PCRE_INFO_OPTIONS, &self->options)) != 0
-            || (rc = pcre_fullinfo(code, NULL, PCRE_INFO_CAPTURECOUNT, &self->groups)) != 0) {
+    if ((rc = pcre_fullinfo(code, NULL, PCRE_INFO_OPTIONS, &options)) != 0
+            || (rc = pcre_fullinfo(code, NULL, PCRE_INFO_CAPTURECOUNT, &groups)) != 0) {
         pcre_free(code);
         set_pcre_error(rc, "fullinfo failed");
         return -1;
@@ -312,6 +312,9 @@ pattern_init(PyPatternObject *self, PyObject *args, PyObject *kwds)
 
     Py_CLEAR(self->groupindex);
     self->groupindex = groupindex;
+
+    self->options = options;
+    self->groups = groups;
 
     return 0;
 }
