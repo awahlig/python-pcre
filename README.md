@@ -38,7 +38,6 @@ Differences:
   (see below)
 * `DEBUG` and `LOCALE` flags are not supported
 * patterns are not cached
-* only str and unicode are supported as input
 * scanner APIs are not supported
 
 For a comprehensive PCRE regex syntax you can visit PHP documentation:
@@ -94,21 +93,34 @@ A function to convert `re` templates is also provided for those one-off cases.
 Unicode handling
 ----------------
 
-python-pcre internally uses the 8-bit interface of the PCRE library.
-This interface can operate either on simple 8-bit characters or in UTF-8 mode.
+python-pcre internally uses the UTF-8 interface of the PCRE library.
 
-The mode is selected when a pattern is compiled by adding `pcre.UTF8` to
-the flags argument.  In UTF-8 mode, the PCRE library expects both the pattern
-and the matched subject string to be valid UTF-8 strings.
+Patterns or matched subjects specified as byte strings that contain ascii characters
+only (0-127) are passed to PCRE directly, as ascii is a subset of UTF-8.
+Other strings are internally re-encoded using a simple Latin1 -> UTF-8 codec which
+maps characters 128-255 to unicode codepoints of the same value.  This conversion
+is transparent to the caller.
 
-python-pcre also allows unicode strings to be specified and it internally
-converts them to UTF-8 strings before calling PCRE APIs.  If a unicode string
-is specified when compiling a pattern, the UTF-8 flag is enabled automatically.
+If you know that your byte strings are UTF-8, you can use the `pcre.UTF8` flag
+to tell python-pcre to pass them directly to PCRE.  This flag has to be specified
+every time a UTF-8 pattern is compiled or a UTF-8 subject is matched.  Note that
+in this mode things like `.` may match multiple bytes:
 
-When internally converting a unicode subject string to UTF-8, any offsets exposed
-by python-pcre are also converted between byte and character offsets so that they
-are always indexes into the subject string specified by the caller, whether it's
-a byte string or a unicode string.
+```python
+>>> pcre.compile('.').match('\xc3\x9c', flags=pcre.UTF8).group()
+'\xc3\x9c'
+>>> _.decode('utf-8')
+u'\xdc'
+```
+
+python-pcre also accept unicode strings as input and internally encodes them into
+UTF-8 using Python APIs.
+
+When internally encoding subject strings to UTF-8, any offsets accepted as input
+or provided as output are also converted between byte and character offsets so that
+the caller doesn't need to be aware of the conversion -- the offsets are always
+indexes into the specified subject string, whether it's a byte string or a unicode
+string.
 
 
 License

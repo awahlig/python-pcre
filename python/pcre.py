@@ -28,7 +28,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import _pcre
 
-__version__ = '0.3'
+__version__ = '0.4'
 __pcre_version__ = _pcre.get_version()
 
 class Pattern(_pcre.Pattern):
@@ -180,6 +180,7 @@ _alnum = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567
 error = PCREError = _pcre.PCREError
 NoMatch = _pcre.NoMatch
 get_jit_target = _pcre.get_jit_target
+MAXREPEAT = 65536
 
 # Pattern and/or match flags
 I = IGNORECASE = _pcre.IGNORECASE
@@ -188,6 +189,10 @@ S = DOTALL = _pcre.DOTALL
 U = UNICODE = _pcre.UNICODE
 X = VERBOSE = _pcre.VERBOSE
 ANCHORED = _pcre.ANCHORED
+NOTBOL = _pcre.NOTBOL
+NOTEOL = _pcre.NOTEOL
+NOTEMPTY = _pcre.NOTEMPTY
+NOTEMPTY_ATSTART = _pcre.NOTEMPTY_ATSTART
 UTF8 = _pcre.UTF8
 NO_UTF8_CHECK = _pcre.NO_UTF8_CHECK
 
