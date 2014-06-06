@@ -32,10 +32,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcre.h>
 
 /* JIT was added in PCRE 8.20. */
-#ifndef PCRE_STUDY_JIT_COMPILE
-#define PCRE_STUDY_JIT_COMPILE 0
+#ifdef PCRE_STUDY_JIT_COMPILE
+#define PCRE_HAS_JIT_API
+#else
+#define PCRE_STUDY_JIT_COMPILE (0)
 #define pcre_free_study pcre_free
 #endif
+
+#define PYPCRE_ERROR_STUDY (-50)
 
 static PyObject *PyExc_PCREError;
 static PyObject *PyExc_NoMatch;
@@ -164,6 +168,9 @@ typedef struct {
     PyObject *groupindex; /* name->index dict */
     pcre *code; /* compiled pattern */
     pcre_extra *extra; /* pcre_study result */
+#ifdef PCRE_HAS_JIT_API
+    pcre_jit_stack *jit_stack; /* user-allocated jit stack */
+#endif
     int options; /* effective options */
     int groups; /* capturing groups count */
 } PyPatternObject;
@@ -180,7 +187,7 @@ make_groupindex(pcre *code, int unicode)
     if ((rc = pcre_fullinfo(code, NULL, PCRE_INFO_NAMECOUNT, &count)) != 0
             || (rc = pcre_fullinfo(code, NULL, PCRE_INFO_NAMEENTRYSIZE, &size)) != 0
             || (rc = pcre_fullinfo(code, NULL, PCRE_INFO_NAMETABLE, &table)) != 0) {
-        set_pcre_error(rc, "fullinfo failed");
+        set_pcre_error(rc, "failed to query nametable properties");
         return NULL;
     }
 
@@ -195,6 +202,7 @@ make_groupindex(pcre *code, int unicode)
             set_pcre_error(84, "group name must not be empty");
             return NULL;
         }
+        /* If pattern was unicode, group names should be too. */
         key = str_as_obj((const char *)(table + 2), unicode);
         if (key == NULL) {
             Py_DECREF(dict);
@@ -292,7 +300,7 @@ pattern_init(PyPatternObject *self, PyObject *args, PyObject *kwds)
     if ((rc = pcre_fullinfo(code, NULL, PCRE_INFO_OPTIONS, &options)) != 0
             || (rc = pcre_fullinfo(code, NULL, PCRE_INFO_CAPTURECOUNT, &groups)) != 0) {
         pcre_free(code);
-        set_pcre_error(rc, "fullinfo failed");
+        set_pcre_error(rc, "failed to query pattern properties");
         return -1;
     }
 
@@ -326,6 +334,9 @@ pattern_dealloc(PyPatternObject *self)
     Py_XDECREF(self->groupindex);
     pcre_free(self->code);
     pcre_free_study(self->extra);
+#ifdef PCRE_HAS_JIT_API
+    pcre_jit_stack_free(self->jit_stack);
+#endif
     Py_TYPE(self)->tp_free(self);
 }
 
@@ -348,7 +359,7 @@ pattern_study(PyPatternObject *self, PyObject *args)
     /* Study the pattern. */
     extra = pcre_study(self->code, options, &err);
     if (err) {
-        PyErr_SetString(PyExc_PCREError, err);
+        set_pcre_error(PYPCRE_ERROR_STUDY, err);
         return NULL;
     }
 
@@ -356,7 +367,63 @@ pattern_study(PyPatternObject *self, PyObject *args)
     pcre_free_study(self->extra);
     self->extra = extra;
 
+    /* Return True if studying the pattern produced additional
+     * information that will help speed up matching.
+     */
     return PyBool_FromLong(extra != NULL);
+}
+
+static PyObject *
+pattern_set_jit_stack(PyPatternObject *self, PyObject *args)
+{
+    int startsize, maxsize;
+#ifdef PCRE_HAS_JIT_API
+    int rc, jit;
+    pcre_jit_stack *stack;
+#endif
+
+    if (!PyArg_ParseTuple(args, "ii", &startsize, &maxsize))
+        return NULL;
+
+#ifdef PCRE_HAS_JIT_API
+    /* Check whether PCRE library has been built with JIT support. */
+    if ((rc = pcre_config(PCRE_CONFIG_JIT, &jit)) != 0) {
+        set_pcre_error(rc, "failed to query JIT support");
+        return NULL;
+    }
+
+    /* Error if no JIT support. */
+    if (!jit) {
+        PyErr_SetString(PyExc_AssertionError, "PCRE library built without JIT support");
+        return NULL;
+    }
+
+    /* Assigning a new JIT stack requires a studied pattern. */
+    if (self->extra == NULL) {
+        PyErr_SetString(PyExc_AssertionError, "pattern must be studied first");
+        return NULL;
+    }
+
+    /* Allocate new JIT stack. */
+    stack = pcre_jit_stack_alloc(startsize, maxsize);
+    if (stack == NULL) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+
+    /* Release old stack and assign the new one. */
+    pcre_jit_stack_free(self->jit_stack);
+    self->jit_stack = stack;
+    pcre_assign_jit_stack(self->extra, NULL, stack);
+
+    Py_RETURN_NONE;
+
+#else
+    /* JIT API not supported. */
+    PyErr_SetString(PyExc_AssertionError, "PCRE library too old");
+    return NULL;
+
+#endif
 }
 
 /* Serializes a pattern into a string.  Saved patterns aren't limited
@@ -376,7 +443,7 @@ pattern_dumps(PyPatternObject *self)
 
     rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_SIZE, &size);
     if (rc != 0) {
-        set_pcre_error(rc, "fullinfo failed");
+        set_pcre_error(rc, "failed to query pattern size");
         return NULL;
     }
     return PyString_FromStringAndSize((char *)self->code, size);
@@ -386,8 +453,9 @@ static PyObject *
 pattern_richcompare(PyPatternObject *self, PyObject *other, int op);
 
 static const PyMethodDef pattern_methods[] = {
-    {"study",   (PyCFunction)pattern_study,     METH_VARARGS},
-    {"dumps",   (PyCFunction)pattern_dumps,     METH_NOARGS},
+    {"study",           (PyCFunction)pattern_study,             METH_VARARGS},
+    {"set_jit_stack",   (PyCFunction)pattern_set_jit_stack,     METH_VARARGS},
+    {"dumps",           (PyCFunction)pattern_dumps,             METH_NOARGS},
     {NULL}      // sentinel
 };
 
@@ -462,7 +530,7 @@ pattern_richcompare(PyPatternObject *self, PyObject *otherobj, int op)
         equal = 0;
     else if ((rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_SIZE, &size)) != 0
             || (rc = pcre_fullinfo(other->code, NULL, PCRE_INFO_SIZE, &other_size)) != 0) {
-        set_pcre_error(rc, "fullinfo failed");
+        set_pcre_error(rc, "failed to query pattern size");
         return NULL;
     }
     else if (size != other_size)
@@ -630,7 +698,7 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
     if (rc < 0) {
         Py_DECREF(string);
         pcre_free(ovector);
-        set_pcre_error(rc, "exec failed");
+        set_pcre_error(rc, "failed to match pattern");
         return -1;
     }
 
@@ -948,20 +1016,44 @@ static PyTypeObject PyMatch_Type = {
  */
 
 static PyObject *
-version(PyObject *self)
+get_version(PyObject *self)
 {
     return PyString_FromString(pcre_version());
 }
 
+static PyObject *
+get_jit_target(PyObject *self)
+{
+#ifdef PCRE_HAS_JIT_API
+    int rc;
+    const char *target;
+
+    /* Query the JIT target.  Sets to NULL if no JIT support. */
+    if ((rc = pcre_config(PCRE_CONFIG_JITTARGET, &target)) != 0) {
+        set_pcre_error(rc, "failed to query JIT target");
+        return NULL;
+    }
+
+    if (target)
+        return PyString_FromString(target);
+#endif
+
+    /* Empty string if PCRE library built without JIT support. */
+    return PyString_FromString("");
+}
+
 static const PyMethodDef methods[] = {
-    {"version", (PyCFunction)version, METH_NOARGS},
+    {"get_version",     (PyCFunction)get_version,       METH_NOARGS},
+    {"get_jit_target",  (PyCFunction)get_jit_target,    METH_NOARGS},
     {NULL}          /* sentinel */
 };
 
 PyMODINIT_FUNC
 init_pcre(void)
 {
-    PyObject *mod = Py_InitModule("_pcre", (PyMethodDef *)methods);
+    PyObject *mod;
+
+    mod = Py_InitModule("_pcre", (PyMethodDef *)methods);
 
     /* Pattern */
     PyPattern_Type.tp_new = PyType_GenericNew;
@@ -998,5 +1090,5 @@ init_pcre(void)
     PyModule_AddIntConstant(mod, "NO_UTF8_CHECK", PCRE_NO_UTF8_CHECK);
 
     /* pcre_study options */
-    PyModule_AddIntConstant(mod, "JIT", PCRE_STUDY_JIT_COMPILE);
+    PyModule_AddIntConstant(mod, "STUDY_JIT", PCRE_STUDY_JIT_COMPILE);
 }

@@ -29,7 +29,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import _pcre
 
 __version__ = '0.3'
-__pcre_version__ = _pcre.version()
+__pcre_version__ = _pcre.get_version()
 
 class Pattern(_pcre.Pattern):
     def search(self, string, pos=-1, endpos=-1, flags=0):
@@ -172,9 +172,14 @@ def enable_re_template_mode():
     global Match
     Match = REMatch
 
+def is_jit_supported():
+    # Tells if PCRE library has been built with JIT support.
+    return bool(get_jit_target())
+
 _alnum = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
 error = PCREError = _pcre.PCREError
 NoMatch = _pcre.NoMatch
+get_jit_target = _pcre.get_jit_target
 
 # Pattern and/or match flags
 I = IGNORECASE = _pcre.IGNORECASE
@@ -187,7 +192,7 @@ UTF8 = _pcre.UTF8
 NO_UTF8_CHECK = _pcre.NO_UTF8_CHECK
 
 # Study flags
-JIT = _pcre.JIT
+STUDY_JIT = _pcre.STUDY_JIT
 
 # Used to convert re templates.
 REGEX_RE_TEMPLATE = compile(r'(?<!\\)\\(?:((?!0|[0-7]{3})\d{1,2})|g<(\w+)>)')
