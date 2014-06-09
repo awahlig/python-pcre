@@ -97,7 +97,7 @@ python-pcre internally uses the UTF-8 interface of the PCRE library.
 
 Patterns or matched subjects specified as byte strings that contain ascii characters
 only (0-127) are passed to PCRE directly, as ascii is a subset of UTF-8.
-Other strings are internally re-encoded using a simple Latin1 -> UTF-8 codec which
+Other strings are internally re-encoded using a simple Latin1 to UTF-8 codec which
 maps characters 128-255 to unicode codepoints of the same value.  This conversion
 is transparent to the caller.
 
@@ -108,12 +108,12 @@ in this mode things like `.` may match multiple bytes:
 
 ```python
 >>> pcre.compile('.').match('\xc3\x9c', flags=pcre.UTF8).group()
-'\xc3\x9c'
+'\xc3\x9c'  # two bytes
 >>> _.decode('utf-8')
-u'\xdc'
+u'\xdc'  # one character
 ```
 
-python-pcre also accept unicode strings as input and internally encodes them into
+python-pcre also accepts unicode strings as input and internally encodes them into
 UTF-8 using Python APIs.
 
 When internally encoding subject strings to UTF-8, any offsets accepted as input
