@@ -45,12 +45,13 @@ static PyObject *PyExc_PCREError;
 static PyObject *PyExc_NoMatch;
 
 /* Extract UTF-8 data from <op>.
- * If <utf8> is non-0, string objects are assumed to already be UTF-8.
  * Returns a new string object containing the encoded UTF-8 data or
  * a new reference to <op> if no encoding was required.
+ * If PCRE_UTF8 option is set, string objects are assumed to be UTF-8.
+ * Sets PCRE_NO_UTF8_CHECK option if output is guaranteed to be UTF-8.
  */
 static PyObject *
-get_string(PyObject *op, int utf8, const char **string, Py_ssize_t *length)
+get_string(PyObject *op, int *options, const char **string, Py_ssize_t *length)
 {
     PyBufferProcs *buffer;
 
@@ -62,6 +63,7 @@ get_string(PyObject *op, int utf8, const char **string, Py_ssize_t *length)
 
         *string = PyString_AS_STRING(op);
         *length = PyString_GET_SIZE(op);
+        *options |= PCRE_NO_UTF8_CHECK;
         return op;
     }
 
@@ -86,7 +88,7 @@ get_string(PyObject *op, int utf8, const char **string, Py_ssize_t *length)
 
         if (PyString_Check(op) || bytes == size) {
             /* Segment contains bytes. */
-            if (utf8)
+            if (*options & PCRE_UTF8)
                 Py_INCREF(op);
 
             else {
@@ -123,6 +125,9 @@ get_string(PyObject *op, int utf8, const char **string, Py_ssize_t *length)
                             *q++ = c;
                     }
                 }
+
+                /* Either ascii or encoded internally -- no check needed. */
+                *options |= PCRE_NO_UTF8_CHECK;
             }
 
             *string = (const char *)ptr;
@@ -137,6 +142,7 @@ get_string(PyObject *op, int utf8, const char **string, Py_ssize_t *length)
                 return NULL;
             *string = PyString_AS_STRING(op);
             *length = PyString_GET_SIZE(op);
+            *options |= PCRE_NO_UTF8_CHECK;
             return op;
         }
 
@@ -351,13 +357,9 @@ pattern_init(PyPatternObject *self, PyObject *args, PyObject *kwds)
         int o;
 
         /* Extract UTF-8 string from the pattern object.  Encode if needed. */
-        temp = get_string(pattern, options & PCRE_UTF8, &data, &length);
+        temp = get_string(pattern, &options, &data, &length);
         if (temp == NULL)
             return -1;
-
-        /* Disable UTF-8 check if pattern has been encoded internally. */
-        if (temp != pattern)
-            options |= PCRE_NO_UTF8_CHECK;
 
         /* Compile the regex. */
         code = pcre_compile2(data, options | PCRE_UTF8, &rc, &err, &o, NULL);
@@ -732,7 +734,7 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
         return -1;
 
     /* Extract UTF-8 string from the subject object.  Encode if needed. */
-    temp = get_string(subject, options & PCRE_UTF8, &data, &length);
+    temp = get_string(subject, &options, &data, &length);
     if (temp == NULL)
         return -1;
 
@@ -747,15 +749,13 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
         return -1;
     }
 
-    /* If subject has been encoded internally, disable UTF-8 check and convert
-     * provided character offsets into byte offsets.
+    /* If subject has been encoded internally, convert provided character offsets
+     * into byte offsets.
      */
     startoffset = pos;
     size = endpos;
-    if (temp != subject) {
-        options |= PCRE_NO_UTF8_CHECK;
+    if (temp != subject)
         utf8_char_to_byte_offsets(data, length, &startoffset, &size);
-    }
 
     /* Create ovector array. */
     ovecsize = (pattern->groups + 1) * 3;
