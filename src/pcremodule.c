@@ -151,6 +151,7 @@ get_string(PyObject *op, int *options, const char **string, Py_ssize_t *length)
         return NULL;
     }
 
+    /* Unsupported object type. */
     PyErr_Format(PyExc_TypeError, "expected string or buffer, not %.200s",
             Py_TYPE(op)->tp_name);
     return NULL;
@@ -253,6 +254,37 @@ typedef struct {
     int options; /* effective options */
     int groups; /* capturing groups count */
 } PyPatternObject;
+
+/* Converts an object into group index or sets an exception and returns -1
+ * if object is of bad type or value is out of range.
+ * Supports int/long group indexes and str/unicode group names.
+ */
+static Py_ssize_t
+get_index(PyPatternObject *op, PyObject *index)
+{
+    Py_ssize_t i = -1;
+
+    if (op == NULL || op->groupindex == NULL) {
+        PyErr_SetString(PyExc_AssertionError, "pattern not ready");
+        return -1;
+    }
+
+    if (PyInt_Check(index) || PyLong_Check(index))
+        i = PyInt_AsSsize_t(index);
+
+    else {
+        index = PyDict_GetItem(op->groupindex, index);
+        if (index && (PyInt_Check(index) || PyLong_Check(index)))
+            i = PyInt_AsSsize_t(index);
+    }
+
+    if (i < 0 || i > op->groups) {
+        PyErr_SetString(PyExc_IndexError, "no such group");
+        return -1;
+    }
+
+    return i;
+}
 
 /* Create a mapping from group names to group indexes. */
 static PyObject *
@@ -647,7 +679,7 @@ typedef struct {
 static int
 get_span(PyMatchObject *op, Py_ssize_t index, int *pos, int *endpos)
 {
-    if (op->pattern == NULL) {
+    if (op->pattern == NULL || op->ovector == NULL) {
         PyErr_SetString(PyExc_AssertionError, "match not ready");
         return -1;
     }
@@ -678,7 +710,7 @@ get_span(PyMatchObject *op, Py_ssize_t index, int *pos, int *endpos)
     return 0;
 }
 
-/* Slices the subject string using offsets from given group. If group
+/* Slices the subject string using offsets from given group.  If group
  * has no match, returns the default object.  Returns new reference.
  */
 static PyObject *
@@ -696,26 +728,15 @@ get_slice(PyMatchObject *op, Py_ssize_t index, PyObject *def)
     return def;
 }
 
-/* Converts an object into group index or returns -1 if object is
- * not supported.  Supports int/long indexes and str/unicode
- * group names.
- */
-static Py_ssize_t
-get_index(PyMatchObject *op, PyObject *index)
+/* Same as get_slice() but takes PyObject group index. */
+static PyObject *
+get_slice_o(PyMatchObject *op, PyObject *index, PyObject *def)
 {
-    if (PyInt_Check(index) || PyLong_Check(index))
-        return PyInt_AsSsize_t(index);
+    Py_ssize_t i = get_index(op->pattern, index);
+    if (i < 0)
+        return NULL;
 
-    if (op->pattern == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "match not ready");
-        return -1;
-    }
-
-    index = PyDict_GetItem(op->pattern->groupindex, index);
-    if (index)
-        return get_index(op, index);
-
-    return -1;
+    return get_slice(op, i, def);
 }
 
 static int
@@ -828,9 +849,7 @@ match_group(PyMatchObject *self, PyObject *args)
             break;
 
         case 1: /* one arg -- return a single slice */
-            result = get_slice(self,
-                    get_index(self, PyTuple_GET_ITEM(args, 0)),
-                    Py_None);
+            result = get_slice_o(self, PyTuple_GET_ITEM(args, 0), Py_None);
             break;
 
         default: /* more than one arg -- return a tuple of slices */
@@ -838,9 +857,7 @@ match_group(PyMatchObject *self, PyObject *args)
             if (result == NULL)
                 return NULL;
             for (i = 0; i < size; ++i) {
-                PyObject *item = get_slice(self,
-                        get_index(self, PyTuple_GET_ITEM(args, i)),
-                        Py_None);
+                PyObject *item = get_slice_o(self, PyTuple_GET_ITEM(args, i), Py_None);
                 if (item == NULL) {
                     Py_DECREF(result);
                     return NULL;
@@ -849,6 +866,7 @@ match_group(PyMatchObject *self, PyObject *args)
             }
             break;
     }
+
     return result;
 }
 
@@ -856,12 +874,19 @@ static PyObject *
 match_start(PyMatchObject *self, PyObject *args)
 {
     PyObject *index = NULL;
+    Py_ssize_t i = 0;
     int pos;
 
     if (!PyArg_UnpackTuple(args, "start", 0, 1, &index))
         return NULL;
 
-    if (get_span(self, index ? get_index(self, index) : 0, &pos, NULL) < 0)
+    if (index) {
+        i = get_index(self->pattern, index);
+        if (i < 0)
+            return NULL;
+    }
+
+    if (get_span(self, i, &pos, NULL) < 0)
         return NULL;
 
     return PyInt_FromLong(pos);
@@ -871,12 +896,19 @@ static PyObject *
 match_end(PyMatchObject *self, PyObject *args)
 {
     PyObject *index = NULL;
+    Py_ssize_t i = 0;
     int endpos;
 
     if (!PyArg_UnpackTuple(args, "end", 0, 1, &index))
         return NULL;
 
-    if (get_span(self, index ? get_index(self, index) : 0, NULL, &endpos) < 0)
+    if (index) {
+        i = get_index(self->pattern, index);
+        if (i < 0)
+            return NULL;
+    }
+
+    if (get_span(self, i, NULL, &endpos) < 0)
         return NULL;
 
     return PyInt_FromLong(endpos);
@@ -886,12 +918,19 @@ static PyObject *
 match_span(PyMatchObject *self, PyObject *args)
 {
     PyObject *index = NULL;
+    Py_ssize_t i = 0;
     int pos, endpos;
 
     if (!PyArg_UnpackTuple(args, "span", 0, 1, &index))
         return NULL;
 
-    if (get_span(self, index ? get_index(self, index) : 0, &pos, &endpos) < 0)
+    if (index) {
+        i = get_index(self->pattern, index);
+        if (i < 0)
+            return NULL;
+    }
+
+    if (get_span(self, i, &pos, &endpos) < 0)
         return NULL;
 
     return Py_BuildValue("(ii)", pos, endpos);
@@ -924,6 +963,7 @@ match_groups(PyMatchObject *self, PyObject *args)
         }
         PyTuple_SET_ITEM(result, index - 1, item);
     }
+
     return result;
 }
 
@@ -949,7 +989,7 @@ match_groupdict(PyMatchObject *self, PyObject *args)
 
     pos = 0;
     while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
-        value = get_slice(self, get_index(self, value), def);
+        value = get_slice_o(self, value, def);
         if (value == NULL) {
             Py_DECREF(dict);
             return NULL;
