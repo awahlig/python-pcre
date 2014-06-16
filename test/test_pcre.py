@@ -215,21 +215,16 @@ class ReTests(unittest.TestCase):
         self.assertRaises(re.error, re.compile, '(?(a.))')
 
     def test_symbolic_refs(self):
-        # PCRE: python-pcre has no re template validation
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<a', 'xx')
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<', 'xx')
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g', 'xx')
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<a a>', 'xx')
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<>', 'xx')
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<1a1>', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<a', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<a a>', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<>', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<1a1>', 'xx')
         self.assertRaises(IndexError, re.sub, '(?P<a>x)', '\g<ab>', 'xx')
-        # PCRE: python-pcre internally uses str.format in sub() so unmatched
-        # groups are passed to str.format() as None and it can't detect whether
-        # they have been used or not (re raises an error if they are used)
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)|(?P<b>y)', '\g<b>', 'xx')
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)|(?P<b>y)', '\\2', 'xx')
-        # PCRE: again, no template validation
-        #self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<-1>', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)|(?P<b>y)', '\g<b>', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)|(?P<b>y)', '\\2', 'xx')
+        self.assertRaises(re.error, re.sub, '(?P<a>x)', '\g<-1>', 'xx')
 
     def test_re_subn(self):
         self.assertEqual(re.subn("(?i)b+", "x", "bbbb BBBB"), ('x x', 2))

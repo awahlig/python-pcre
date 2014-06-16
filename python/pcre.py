@@ -95,26 +95,38 @@ class Pattern(_pcre.Pattern):
                 if 0 < count <= n:
                     break
         output.append(string[pos:])
-        return string[:0].join(output), n
+        return (string[:0].join(output), n)
 
     def __reduce__(self):
         return (Pattern, (self.pattern, self.flags))
 
 class Match(_pcre.Match):
     def expand(self, template):
-        return template.format(self.group(), *self.groups(), **self.groupdict())
+        return template.format(self.group(), *self.groups(''), **self.groupdict(''))
 
 class REMatch(_pcre.Match):
     def expand(self, template):
-        # Convert template, use str.format() and adjust exceptions to match
-        # the re module.  Group \0 is not supported in re so use None.
-        try:
-            return convert_re_template(template).format(None,
-                *self.groups(), **self.groupdict())
-        except IndexError:
-            raise PCREError(15, 'invalid group reference')
-        except KeyError:
-            raise IndexError('unknown group name')
+        groups = (self.group(),) + self.groups()
+        groupdict = self.groupdict()
+        def repl(match):
+            esc, index, group, badgroup = match.groups()
+            if esc:
+                return ('\\' + esc).decode('string-escape')
+            if badgroup:
+                raise PCREError(100, 'invalid group name')
+            try:
+                if index or group.isdigit():
+                    result = groups[int(index or group)]
+                else:
+                    result = groupdict[group]
+            except IndexError:
+                raise PCREError(15, 'invalid group reference')
+            except KeyError:
+                raise IndexError('unknown group name')
+            if result is None:
+                raise PCREError(101, 'unmatched group')
+            return result
+        return _REGEX_RE_TEMPLATE.sub(repl, template)
 
 def compile(pattern, flags=0):
     if isinstance(pattern, _pcre.Pattern):
@@ -151,7 +163,7 @@ def loads(data, pattern=None):
 def escape(pattern):
     # Escapes a regular expression.
     s = list(pattern)
-    alnum = _alnum
+    alnum = _ALNUM
     for i, c in enumerate(pattern):
         if c not in alnum:
             s[i] = '\\000' if c == '\000' else ('\\' + c)
@@ -162,10 +174,15 @@ def escape_template(template):
     return template.replace('{', '{{').replace('}', '}}')
 
 def convert_re_template(template):
-    # Converts re template "\1\g<id>" to "{1}{id}" format.
-    repl = lambda m: '{%s}' % (m.group(1) or m.group(2))
-    t = REGEX_RE_TEMPLATE.sub(repl, escape_template(template))
-    return t.decode('unicode-escape' if isinstance(t, unicode) else 'string-escape')
+    # Converts re template r"\1\g<id>" to "{1}{id}" format.
+    def repl(match):
+        esc, index, group, badgroup = match.groups()
+        if esc:
+            return ('\\' + esc).decode('string-escape')
+        if badgroup:
+            raise PCREError(100, 'invalid group name')
+        return '{%s}' % (index or group)
+    return _REGEX_RE_TEMPLATE.sub(repl, escape_template(template))
 
 def enable_re_template_mode():
     # Makes calls to sub() take re templates instead of str.format() templates.
@@ -176,7 +193,7 @@ def is_jit_supported():
     # Tells if PCRE library has been built with JIT support.
     return bool(get_jit_target())
 
-_alnum = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
+_ALNUM = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
 error = PCREError = _pcre.PCREError
 NoMatch = _pcre.NoMatch
 get_jit_target = _pcre.get_jit_target
@@ -199,5 +216,6 @@ NO_UTF8_CHECK = _pcre.NO_UTF8_CHECK
 # Study flags
 STUDY_JIT = _pcre.STUDY_JIT
 
-# Used to convert re templates.
-REGEX_RE_TEMPLATE = compile(r'(?<!\\)\\(?:((?!0|[0-7]{3})\d{1,2})|g<(\w+)>)')
+# Used to parse re templates.
+_REGEX_RE_TEMPLATE = compile(r'\\(?:([\\abfnrtv]|0[0-7]{0,2}|[0-7]{3})|'
+                             r'(\d{1,2})|g<(\d+|[^\d\W]\w*)>|(g[^>]*))')

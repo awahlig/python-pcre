@@ -59,26 +59,24 @@ Example:
 ...          'def myfunc():')
 'static PyObject*\npy_myfunc(void)\n{'
 ```
-Note the `{1}` and escaped `{{` in repl string.
+Note `{1}` and escaped `{{` in the template string.
 
 The built-in re module would use `\1` instead:
 `r'static PyObject*\npy_\1(void)\n{'`
 
-This means that the repl string no longer needs to be a raw string and the library doesn't
-have to take care of escaped characters like `\n`.
+Named groups are referenced using `{name}` instead of `\g<name>`.
 
-Referencing named groups is also easier -- `{name}` instead of somewhat clunky `\g<name>`.
+Entire match can be referenced using `{0}`.
 
-It is also possible to reference the entire match using `{0}`, something that is not
-possible in `re` (`\0` is just a null-character).
+This makes the template string easier to read and means that it no longer needs to be
+a raw string.
 
-However, `re` template mode can be enabled if needed using `enable_re_template_mode()`.
+However, `re` template mode can be enabled using `enable_re_template_mode()`.
 This might be useful if python-pcre is to be used with existing `re`-based code.
 
 ```python
->>> import pcre as re
->>> re.enable_re_template_mode()
->>> re.sub(r'(.)', r'[\1]', 'foo')
+>>> pcre.enable_re_template_mode()
+>>> pcre.sub(r'(.)', r'[\1]', 'foo')
 '[f][o][o]'
 ```
 
@@ -88,6 +86,10 @@ A function to convert `re` templates is also provided for those one-off cases.
 >>> pcre.convert_re_template(r'static PyObject*\npy_\1(void)\n{')
 'static PyObject*\npy_{1}(void)\n{{'
 ```
+
+A small difference between the two modes is that in `str.format()` mode, groups that
+didn't match are replaced with `''` whereas in `re` mode it's an error to reference
+such groups in the template.
 
 
 Unicode handling
