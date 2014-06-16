@@ -255,6 +255,20 @@ typedef struct {
     int groups; /* capturing groups count */
 } PyPatternObject;
 
+/* Returns 0 if Pattern.__init__ has been called or sets an exception
+ * and returns -1 if not.  Pattern.__init__ sets all fields in one go
+ * so 0 means they can all be safely used.
+ */
+static int
+assert_pattern_ready(PyPatternObject *op)
+{
+    if (op && op->code)
+        return 0;
+
+    PyErr_SetString(PyExc_AssertionError, "pattern not ready");
+    return -1;
+}
+
 /* Converts an object into group index or sets an exception and returns -1
  * if object is of bad type or value is out of range.
  * Supports int/long group indexes and str/unicode group names.
@@ -263,11 +277,6 @@ static Py_ssize_t
 get_index(PyPatternObject *op, PyObject *index)
 {
     Py_ssize_t i = -1;
-
-    if (op == NULL || op->groupindex == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "pattern not ready");
-        return -1;
-    }
 
     if (PyInt_Check(index) || PyLong_Check(index))
         i = PyInt_AsSsize_t(index);
@@ -278,12 +287,16 @@ get_index(PyPatternObject *op, PyObject *index)
             i = PyInt_AsSsize_t(index);
     }
 
-    if (i < 0 || i > op->groups) {
-        PyErr_SetString(PyExc_IndexError, "no such group");
+    /* PyInt_AsSsize_t() may have failed. */
+    if (PyErr_Occurred())
         return -1;
-    }
 
-    return i;
+    /* Return group index if it's in range. */
+    if (i >= 0 && i <= op->groups)
+        return i;
+
+    PyErr_SetString(PyExc_IndexError, "no such group");
+    return -1;
 }
 
 /* Create a mapping from group names to group indexes. */
@@ -466,11 +479,8 @@ pattern_study(PyPatternObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "|i:study", &options))
         return NULL;
 
-    /* Make sure pattern is compiled. */
-    if (self->code == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "pattern not compiled");
+    if (assert_pattern_ready(self) < 0)
         return NULL;
-    }
 
     /* Study the pattern. */
     extra = pcre_study(self->code, options, &err);
@@ -551,11 +561,8 @@ pattern_dumps(PyPatternObject *self)
     size_t size;
     int rc;
 
-    /* Make sure pattern is compiled. */
-    if (self->code == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "pattern not compiled");
+    if (assert_pattern_ready(self) < 0)
         return NULL;
-    }
 
     rc = pcre_fullinfo(self->code, NULL, PCRE_INFO_SIZE, &size);
     if (rc != 0) {
@@ -672,6 +679,20 @@ typedef struct {
     int lastindex; /* returned by pcre_exec */
 } PyMatchObject;
 
+/* Returns 0 if Match.__init__ has been called or sets an exception
+ * and returns -1 if not.  Match.__init__ sets all fields in one go
+ * so 0 means they can all be safely used.
+ */
+static int
+assert_match_ready(PyMatchObject *op)
+{
+    if (op && op->ovector)
+        return 0;
+
+    PyErr_SetString(PyExc_AssertionError, "match not ready");
+    return -1;
+}
+
 /* Retrieves offsets into the subject object for given group.  Both
  * pos and endpos can be NULL if not used.  Returns 0 if successful
  * or sets an exception and returns -1 in case of an error.
@@ -679,11 +700,6 @@ typedef struct {
 static int
 get_span(PyMatchObject *op, Py_ssize_t index, int *pos, int *endpos)
 {
-    if (op->pattern == NULL || op->ovector == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "match not ready");
-        return -1;
-    }
-
     if (index < 0 || index > op->pattern->groups) {
         PyErr_SetString(PyExc_IndexError, "no such group");
         return -1;
@@ -754,6 +770,9 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
             &PyPattern_Type, &pattern, &subject, &pos, &endpos, &options))
         return -1;
 
+    if (assert_pattern_ready(pattern) < 0)
+        return -1;
+
     /* Extract UTF-8 string from the subject object.  Encode if needed. */
     temp = get_string(subject, &options, &data, &length);
     if (temp == NULL)
@@ -784,14 +803,6 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
     if (ovector == NULL) {
         Py_DECREF(temp);
         PyErr_NoMemory();
-        return -1;
-    }
-
-    /* Make sure pattern is compiled. */
-    if (pattern->code == NULL) {
-        Py_DECREF(temp);
-        pcre_free(ovector);
-        PyErr_SetString(PyExc_AssertionError, "pattern not compiled");
         return -1;
     }
 
@@ -842,6 +853,9 @@ match_group(PyMatchObject *self, PyObject *args)
     PyObject *result;
     Py_ssize_t i, size;
 
+    if (assert_match_ready(self) < 0)
+        return NULL;
+
     size = PyTuple_GET_SIZE(args);
     switch (size) {
         case 0: /* no args -- return the whole match */
@@ -880,6 +894,9 @@ match_start(PyMatchObject *self, PyObject *args)
     if (!PyArg_UnpackTuple(args, "start", 0, 1, &index))
         return NULL;
 
+    if (assert_match_ready(self) < 0)
+        return NULL;
+
     if (index) {
         i = get_index(self->pattern, index);
         if (i < 0)
@@ -900,6 +917,9 @@ match_end(PyMatchObject *self, PyObject *args)
     int endpos;
 
     if (!PyArg_UnpackTuple(args, "end", 0, 1, &index))
+        return NULL;
+
+    if (assert_match_ready(self) < 0)
         return NULL;
 
     if (index) {
@@ -924,6 +944,9 @@ match_span(PyMatchObject *self, PyObject *args)
     if (!PyArg_UnpackTuple(args, "span", 0, 1, &index))
         return NULL;
 
+    if (assert_match_ready(self) < 0)
+        return NULL;
+
     if (index) {
         i = get_index(self->pattern, index);
         if (i < 0)
@@ -946,10 +969,8 @@ match_groups(PyMatchObject *self, PyObject *args)
     if (!PyArg_UnpackTuple(args, "groups", 0, 1, &def))
         return NULL;
 
-    if (self->pattern == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "match not ready");
+    if (assert_match_ready(self) < 0)
         return NULL;
-    }
 
     result = PyTuple_New(self->pattern->groups);
     if (result == NULL)
@@ -978,10 +999,8 @@ match_groupdict(PyMatchObject *self, PyObject *args)
     if (!PyArg_UnpackTuple(args, "groupdict", 0, 1, &def))
         return NULL;
 
-    if (self->pattern == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "match not ready");
+    if (assert_match_ready(self) < 0)
         return NULL;
-    }
 
     dict = PyDict_New();
     if (dict == NULL)
@@ -1019,10 +1038,8 @@ match_lastgroup_getter(PyMatchObject *self, void *closure)
     PyObject *key, *value;
     Py_ssize_t pos;
 
-    if (self->pattern == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "match not ready");
+    if (assert_match_ready(self) < 0)
         return NULL;
-    }
 
     /* Simple reverse lookup into groupindex. */
     pos = 0;
@@ -1042,10 +1059,8 @@ match_regs_getter(PyMatchObject *self, void *closure)
     PyObject *regs, *item;
     Py_ssize_t count, i;
 
-    if (self->pattern == NULL) {
-        PyErr_SetString(PyExc_AssertionError, "match not ready");
+    if (assert_match_ready(self) < 0)
         return NULL;
-    }
 
     count = self->pattern->groups + 1;
     regs = PyTuple_New(count);
