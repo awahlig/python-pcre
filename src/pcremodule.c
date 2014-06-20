@@ -1188,7 +1188,14 @@ static const PyMethodDef methods[] = {
 PyMODINIT_FUNC
 init_pcre(void)
 {
-    PyObject *mod = Py_InitModule("_pcre", (PyMethodDef *)methods);
+    PyObject *mod;
+
+    /* Use Python memory manager for PCRE allocations. */
+    pcre_malloc = PyMem_Malloc;
+    pcre_free = PyMem_Free;
+
+    /* _pcre */
+    mod = Py_InitModule("_pcre", (PyMethodDef *)methods);
 
     /* Pattern */
     PyPattern_Type.tp_new = PyType_GenericNew;
