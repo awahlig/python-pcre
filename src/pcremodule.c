@@ -31,12 +31,20 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <pcre.h>
 
+#if PY_MAJOR_VERSION >= 3
+#    define PY3
+#    define PyInt_FromLong PyLong_FromLong
+#    if PY_VERSION_HEX >= 0x03030000
+#        define PY3_NEW_UNICODE
+#    endif
+#endif
+
 /* JIT was added in PCRE 8.20. */
 #ifdef PCRE_STUDY_JIT_COMPILE
-#define PCRE_HAS_JIT_API
+#    define PCRE_HAS_JIT_API
 #else
-#define PCRE_STUDY_JIT_COMPILE (0)
-#define pcre_free_study pcre_free
+#    define PCRE_STUDY_JIT_COMPILE (0)
+#    define pcre_free_study pcre_free
 #endif
 
 #define PYPCRE_ERROR_STUDY (-50)
@@ -44,117 +52,276 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 static PyObject *PyExc_PCREError;
 static PyObject *PyExc_NoMatch;
 
-/* Extract UTF-8 data from <op>.
- * Returns a new string object containing the encoded UTF-8 data or
- * a new reference to <op> if no encoding was required.
- * If PCRE_UTF8 option is set, string objects are assumed to be UTF-8.
- * Sets PCRE_NO_UTF8_CHECK option if output is guaranteed to be UTF-8.
+/* Used to hold UTF-8 data created from all supported inputs
+ * in most efficient way.
  */
-static PyObject *
-get_string(PyObject *op, int *options, const char **string, Py_ssize_t *length)
+typedef struct {
+    const char *string;
+    int length;
+    PyObject *op;
+    Py_buffer *buffer;
+} pypcre_string_t;
+
+static Py_buffer *
+pypcre_buffer_get(PyObject *op)
 {
-    PyBufferProcs *buffer;
+    Py_buffer *view;
 
-    /* Unicode doesn't always provide buffer interface. */
-    if (PyUnicode_Check(op)) {
-        op = PyUnicode_AsUTF8String(op);
-        if (op == NULL)
-            return NULL;
-
-        *string = PyString_AS_STRING(op);
-        *length = PyString_GET_SIZE(op);
-        *options |= PCRE_NO_UTF8_CHECK;
-        return op;
+    view = (Py_buffer *)PyMem_Malloc(sizeof(Py_buffer));
+    if (view == NULL) {
+        PyErr_NoMemory();
+        return NULL;
     }
 
-    /* Try the buffer interface. */
-    buffer = Py_TYPE(op)->tp_as_buffer;
-    if (buffer && buffer->bf_getreadbuffer && buffer->bf_getsegcount
-            /* Must have exactly 1 segment. */
-            && buffer->bf_getsegcount(op, NULL) == 1) {
+    memset(view, 0, sizeof(Py_buffer));
+    if (PyObject_GetBuffer(op, view, PyBUF_ND) < 0) {
+        PyMem_Free(view);
+        return NULL;
+    }
 
-        void *ptr;
-        Py_ssize_t bytes, size;
+    return view;
+}
+
+static void
+pypcre_buffer_release(Py_buffer *buffer)
+{
+    if (buffer) {
+        PyBuffer_Release(buffer);
+        PyMem_Free(buffer);
+    }
+}
+
+/* Release string resources. */
+static void
+pypcre_string_release(pypcre_string_t *str)
+{
+    if (str) {
+        pypcre_buffer_release(str->buffer);
+        Py_XDECREF(str->op);
+        memset(str, 0, sizeof(pypcre_string_t));
+    }
+}
+
+static int
+_string_get_from_bytes(pypcre_string_t *str, PyObject *op, int *options,
+                       Py_buffer *view, int viewrel)
+{
+    const unsigned char *start = (const unsigned char *)view->buf;
+    const unsigned char *p, *end = start + view->len;
+    unsigned char c, *q;
+    Py_ssize_t count = 0;
+
+    if (!(*options & PCRE_UTF8)) {
+        *options |= PCRE_NO_UTF8_CHECK;
+
+        /* Count non-ascii bytes. */
+        for (p = start; p < end; ++p) {
+            if (*p > 127)
+                ++count;
+        }
+    }
+
+    /* As-is if ascii or declared UTF-8 by caller. */
+    if (count == 0) {
+        str->string = (const char *)view->buf;
+        str->length = view->len;
+        /* Save buffer if it needs to be released. */
+        if (viewrel)
+            str->buffer = view;
+        str->op = op;
+        Py_INCREF(op);
+        return 0;
+    }
+
+    /* Non-ascii characters will take two bytes. */
+    count += view->len;
+    op = PyBytes_FromStringAndSize(NULL, count);
+    if (op == NULL) {
+        if (viewrel)
+            pypcre_buffer_release(view);
+        return -1;
+    }
+
+    q = (unsigned char *)PyBytes_AS_STRING(op);
+    str->string = (const char *)q;
+    str->length = count;
+    str->op = op;
+
+    /* Inline Latin1 -> UTF-8 conversion. */
+    for (p = start; p < end; ++p) {
+        if ((c = *p) > 127) {
+            *q++ = 0xc0 | (c >> 6);
+            *q++ = 0x80 | (c & 0x3f);
+        }
+        else
+            *q++ = c;
+    }
+
+    if (viewrel)
+        pypcre_buffer_release(view);
+    return 0;
+}
+
+#ifndef PY3_NEW_UNICODE
+/* Extract UTF-8 from Py_UNICODE array. */
+static int
+_string_get_from_pyunicode(pypcre_string_t *str, int *options, Py_buffer *view,
+                           int viewrel, Py_ssize_t size)
+{
+    PyObject *op;
+
+    op = PyUnicode_EncodeUTF8((const Py_UNICODE *)view->buf, size, NULL);
+    if (viewrel)
+        pypcre_buffer_release(view);
+    if (op == NULL)
+        return -1;
+
+    str->string = PyBytes_AS_STRING(op);
+    str->length = PyBytes_GET_SIZE(op);
+    str->op = op;
+    *options |= PCRE_NO_UTF8_CHECK;
+    return 0;
+}
+#endif
+
+/* Extract UTF-8 data from <op>.
+ * Sets str->string and str->length to UTF-8 data buffer.
+ * Sets str->op to <op> if no encoding was required or to a bytes object
+ * owning str->string if encoded internally to UTF-8.
+ * If PCRE_UTF8 option is set, bytes-like objects are assumed to be UTF-8.
+ * Sets PCRE_NO_UTF8_CHECK option if encoded internally or ascii.
+ * Returns 0 if successful or sets an exception and returns -1 in case
+ * of an error.  Use pypcre_string_release() when done with the string.
+ */
+static int
+pypcre_string_get(pypcre_string_t *str, PyObject *op, int *options)
+{
+    memset(str, 0, sizeof(pypcre_string_t));
+
+    /* This is not strictly needed because bytes support the buffer
+     * interface but it's more efficient.
+     */
+    if (PyBytes_Check(op)) {
+        Py_buffer view;
+
+        view.buf = PyBytes_AS_STRING(op);
+        view.len = PyBytes_GET_SIZE(op);
+        return _string_get_from_bytes(str, op, options, &view, 0);
+    }
+
+    if (PyUnicode_Check(op)) {
+        *options |= PCRE_NO_UTF8_CHECK;
+
+#ifdef PY3_NEW_UNICODE
+        if (PyUnicode_READY(op) < 0)
+            return -1;
+
+        /* If stored as ascii, return as-is because ascii is a subset of UTF-8. */
+        if (PyUnicode_IS_ASCII(op)) {
+            str->string = (const char *)PyUnicode_DATA(op);
+            str->length = PyUnicode_GET_LENGTH(op);
+            str->op = op;
+            Py_INCREF(op);
+            return 0;
+        }
+#endif
+
+        /* Encode into UTF-8 bytes object. */
+        op = PyUnicode_AsUTF8String(op);
+        if (op == NULL)
+            return -1;
+
+        str->string = PyBytes_AS_STRING(op);
+        str->length = PyBytes_GET_SIZE(op);
+        str->op = op;
+        return 0;
+    }
+
+    /* Try the new buffer interface, */
+    if (PyObject_CheckBuffer(op)) {
+        Py_buffer *view;
+
+        view = pypcre_buffer_get(op);
+        if (view == NULL)
+            return -1;
+
+        /* Buffer contains bytes. */
+        if (view->itemsize == 1 && view->ndim == 1)
+            return _string_get_from_bytes(str, op, options, view, 1);
+
+#ifdef PY3_NEW_UNICODE
+        else if ((view->itemsize == 2 || view->itemsize == 4) && view->ndim == 1) {
+            /* Buffer contains 2-byte or 4-byte values. */
+            PyObject *unicode;
+
+            /* Convert to unicode object. */
+            unicode = PyUnicode_FromKindAndData((view->itemsize == 2 ? PyUnicode_2BYTE_KIND :
+                    PyUnicode_4BYTE_KIND), view->buf, view->shape[0]);
+            pypcre_buffer_release(view);
+            if (unicode == NULL)
+                return -1;
+
+            /* Encode into UTF-8 bytes object. */
+            op = PyUnicode_AsUTF8String(unicode);
+            Py_DECREF(unicode);
+            if (op == NULL)
+                return -1;
+
+            str->string = PyBytes_AS_STRING(op);
+            str->length = PyBytes_GET_SIZE(op);
+            str->op = op;
+            *options |= PCRE_NO_UTF8_CHECK;
+            return 0;
+        }
+#else
+        /* Buffer contains Py_UNICODE values. */
+        else if (view->itemsize == sizeof(Py_UNICODE) && view->ndim == 1)
+            return _string_get_from_pyunicode(str, options, view, 1, view->shape[0]);
+#endif
+
+        pypcre_buffer_release(view);
+        PyErr_SetString(PyExc_TypeError, "unsupported buffer format");
+        return -1;
+    }
+
+#ifndef PY3
+    /* Try the old buffer interface. */
+    if (Py_TYPE(op)->tp_as_buffer
+            && Py_TYPE(op)->tp_as_buffer->bf_getreadbuffer
+            && Py_TYPE(op)->tp_as_buffer->bf_getsegcount
+            /* Must have exactly 1 segment. */
+            && Py_TYPE(op)->tp_as_buffer->bf_getsegcount(op, NULL) == 1) {
+
+        Py_buffer view;
+        Py_ssize_t size;
 
         /* Read the segment. */
-        bytes = buffer->bf_getreadbuffer(op, 0, &ptr);
-        if (bytes < 0)
-            return NULL;
+        view.len = Py_TYPE(op)->tp_as_buffer->bf_getreadbuffer(op, 0, &view.buf);
+        if (view.len < 0)
+            return -1;
 
         /* Get object length. */
         size = PyObject_Size(op);
         if (size < 0)
-            return NULL;
+            return -1;
 
-        if (PyString_Check(op) || bytes == size) {
-            /* Segment contains bytes. */
-            if (*options & PCRE_UTF8)
-                Py_INCREF(op);
+        /* Segment contains bytes. */
+        if (PyString_Check(op) || view.len == size)
+            return _string_get_from_bytes(str, op, options, &view, 0);
 
-            else {
-                const unsigned char *data = (const unsigned char *)ptr;
-                const unsigned char *p, *end = data + size;
-                unsigned char c, *q;
+        /* Segment contains unicode. */
+        else if (view.len == sizeof(Py_UNICODE) * size)
+            return _string_get_from_pyunicode(str, options, &view, 0, size);
 
-                /* Count non-ascii bytes. */
-                for (p = data, bytes = 0; p < end; ++p) {
-                    if (*p > 127)
-                        ++bytes;
-                }
-
-                /* If all bytes ascii then valid UTF-8, use as-is. */
-                if (bytes == 0)
-                    Py_INCREF(op);
-
-                else {
-                    /* Non-ascii characters will take two bytes. */
-                    size += bytes;
-                    op = PyString_FromStringAndSize(NULL, size);
-                    if (op == NULL)
-                        return NULL;
-
-                    /* Inline Latin1 -> UTF-8 conversion. */
-                    q = (unsigned char *)PyString_AS_STRING(op);
-                    ptr = q;
-                    for (p = data; p < end; ++p) {
-                        if ((c = *p) > 127) {
-                            *q++ = 0xc0 | (c >> 6);
-                            *q++ = 0x80 | (c & 0x3f);
-                        }
-                        else
-                            *q++ = c;
-                    }
-                }
-
-                /* Either ascii or encoded internally -- no check needed. */
-                *options |= PCRE_NO_UTF8_CHECK;
-            }
-
-            *string = (const char *)ptr;
-            *length = size;
-            return op;
-        }
-
-        else if (bytes == sizeof(Py_UNICODE) * size) {
-            /* Segment contains unicode. */
-            op = PyUnicode_EncodeUTF8((const Py_UNICODE *)ptr, size, NULL);
-            if (op == NULL)
-                return NULL;
-            *string = PyString_AS_STRING(op);
-            *length = PyString_GET_SIZE(op);
-            *options |= PCRE_NO_UTF8_CHECK;
-            return op;
-        }
-
-        /* Segment contains neither bytes nor unicode. */
         PyErr_SetString(PyExc_TypeError, "buffer size mismatch");
-        return NULL;
+        return -1;
     }
+#endif
 
     /* Unsupported object type. */
     PyErr_Format(PyExc_TypeError, "expected string or buffer, not %.200s",
             Py_TYPE(op)->tp_name);
-    return NULL;
+    return -1;
 }
 
 /* Sets an exception from PCRE error code and error string. */
@@ -198,8 +365,10 @@ set_pcre_error(int rc, const char *s)
  * If <endpos> is specified, it must not be less than <pos>.
  */
 static void
-utf8_byte_to_char_offsets(const char *s, Py_ssize_t length, int *pos, int *endpos)
+pypcre_string_byte_to_char_offsets(const pypcre_string_t *str, int *pos, int *endpos)
 {
+    const char *s = str->string;
+    Py_ssize_t length = str->length;
     int charnum = 0, i = 0, offset;
 
     if (pos && (*pos >= 0)) {
@@ -220,8 +389,10 @@ utf8_byte_to_char_offsets(const char *s, Py_ssize_t length, int *pos, int *endpo
  * If <endpos> is specified it must not be less than <pos>.
  */
 static void
-utf8_char_to_byte_offsets(const char *s, Py_ssize_t length, int *pos, int *endpos)
+pypcre_string_char_to_byte_offsets(const pypcre_string_t *str, int *pos, int *endpos)
 {
+    const char *s = str->string;
+    Py_ssize_t length = str->length;
     int charnum = 0, i = 0, offset;
 
     if (pos && (*pos >= 0)) {
@@ -251,7 +422,7 @@ typedef struct {
 #ifdef PCRE_HAS_JIT_API
     pcre_jit_stack *jit_stack; /* user-allocated jit stack */
 #endif
-    int options; /* effective options */
+    int flags; /* as passed in */
     int groups; /* capturing groups count */
 } PyPatternObject;
 
@@ -278,13 +449,23 @@ get_index(PyPatternObject *op, PyObject *index)
 {
     Py_ssize_t i = -1;
 
+#ifdef PY3
+    if (PyLong_Check(index))
+        i = PyLong_AsSsize_t(index);
+#else
     if (PyInt_Check(index) || PyLong_Check(index))
         i = PyInt_AsSsize_t(index);
+#endif
 
     else {
         index = PyDict_GetItem(op->groupindex, index);
+#ifdef PY3
+        if (index && PyLong_Check(index))
+            i = PyLong_AsSsize_t(index);
+#else
         if (index && (PyInt_Check(index) || PyLong_Check(index)))
             i = PyInt_AsSsize_t(index);
+#endif
     }
 
     /* PyInt_AsSsize_t() may have failed. */
@@ -328,10 +509,14 @@ make_groupindex(pcre *code, int unicode)
         }
 
         /* Create group name object. */
+#ifdef PY3
+        key = PyUnicode_FromString((const char *)(table + 2));
+#else
         if (unicode)
             key = PyUnicode_FromString((const char *)(table + 2));
         else
-            key = PyString_FromString((const char *)(table + 2));
+            key = PyBytes_FromString((const char *)(table + 2));
+#endif
         if (key == NULL) {
             Py_DECREF(dict);
             return NULL;
@@ -363,73 +548,64 @@ static int
 pattern_init(PyPatternObject *self, PyObject *args, PyObject *kwds)
 {
     PyObject *pattern, *loads = NULL, *groupindex;
-    int rc, groups, options = 0;
+    int rc, groups, flags = 0;
     pcre *code;
 
     static const char *const kwlist[] = {"pattern", "flags", "loads", NULL};
-    
+
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|iS:__init__", (char **)kwlist,
-            &pattern, &options, &loads))
+            &pattern, &flags, &loads))
         return -1;
 
     /* Patterns can be serialized using dumps() and then unserialized
-     * using the "loads" argument.  The "pattern" argument is then used
-     * only to initialize the "pattern" attribute.
+     * using the "loads" argument.
      */
     if (loads) {
         Py_ssize_t size;
 
-        if (options != 0) {
-            PyErr_SetString(PyExc_ValueError, "cannot process flags argument "
-                "with a serialized pattern");
-            return -1;
-        }
-
-        size = PyString_GET_SIZE(loads);
+        size = PyBytes_GET_SIZE(loads);
         code = pcre_malloc(size);
         if (code == NULL) {
             PyErr_NoMemory();
             return -1;
         }
 
-        memcpy(code, PyString_AS_STRING(loads), size);
+        memcpy(code, PyBytes_AS_STRING(loads), size);
     }
     else {
-        PyObject *temp;
-        const char *data;
-        Py_ssize_t length;
+        pypcre_string_t str;
         const char *err = NULL;
-        int o;
+        int o, options = flags;
 
         /* Extract UTF-8 string from the pattern object.  Encode if needed. */
-        temp = get_string(pattern, &options, &data, &length);
-        if (temp == NULL)
+        if (pypcre_string_get(&str, pattern, &options) < 0)
             return -1;
 
         /* Compile the regex. */
-        code = pcre_compile2(data, options | PCRE_UTF8, &rc, &err, &o, NULL);
+        code = pcre_compile2(str.string, options | PCRE_UTF8, &rc, &err, &o, NULL);
         if (code == NULL) {
-            /* Convert byte offset into character offset if needed. */
-            if (temp != pattern)
-                utf8_byte_to_char_offsets(data, length, &o, NULL);
-            Py_DECREF(temp);
+            PyObject *op;
 
-            temp = PyString_FromFormat("%.200s at position %d", err, o);
-            if (temp) {
+            /* Convert byte offset into character offset if needed. */
+            if (str.op != pattern)
+                pypcre_string_byte_to_char_offsets(&str, &o, NULL);
+            pypcre_string_release(&str);
+
+            op = PyBytes_FromFormat("%.200s at position %d", err, o);
+            if (op) {
                 /* Note.  Compilation error codes are positive. */
-                set_pcre_error(rc, PyString_AS_STRING(temp));
-                Py_DECREF(temp);
+                set_pcre_error(rc, PyBytes_AS_STRING(op));
+                Py_DECREF(op);
             }
             return -1;
         }
-        Py_DECREF(temp);
+        pypcre_string_release(&str);
     }
 
-    /* Get effective options and number of capturing groups. */
-    if ((rc = pcre_fullinfo(code, NULL, PCRE_INFO_OPTIONS, &options)) != 0
-            || (rc = pcre_fullinfo(code, NULL, PCRE_INFO_CAPTURECOUNT, &groups)) != 0) {
+    /* Get number of capturing groups. */
+    if ((rc = pcre_fullinfo(code, NULL, PCRE_INFO_CAPTURECOUNT, &groups)) != 0) {
         pcre_free(code);
-        set_pcre_error(rc, "failed to query pattern properties");
+        set_pcre_error(rc, "failed to query number of capturing groups");
         return -1;
     }
 
@@ -450,7 +626,7 @@ pattern_init(PyPatternObject *self, PyObject *args, PyObject *kwds)
     Py_CLEAR(self->groupindex);
     self->groupindex = groupindex;
 
-    self->options = options;
+    self->flags = flags;
     self->groups = groups;
 
     return 0;
@@ -464,7 +640,8 @@ pattern_dealloc(PyPatternObject *self)
     pcre_free(self->code);
     pcre_free_study(self->extra);
 #ifdef PCRE_HAS_JIT_API
-    pcre_jit_stack_free(self->jit_stack);
+    if (self->jit_stack)
+        pcre_jit_stack_free(self->jit_stack);
 #endif
     Py_TYPE(self)->tp_free(self);
 }
@@ -538,7 +715,8 @@ pattern_set_jit_stack(PyPatternObject *self, PyObject *args)
     }
 
     /* Release old stack and assign the new one. */
-    pcre_jit_stack_free(self->jit_stack);
+    if (self->jit_stack)
+        pcre_jit_stack_free(self->jit_stack);
     self->jit_stack = stack;
     pcre_assign_jit_stack(self->extra, NULL, stack);
 
@@ -569,7 +747,7 @@ pattern_dumps(PyPatternObject *self)
         set_pcre_error(rc, "failed to query pattern size");
         return NULL;
     }
-    return PyString_FromStringAndSize((char *)self->code, size);
+    return PyBytes_FromStringAndSize((char *)self->code, size);
 }
 
 static PyObject *
@@ -584,15 +762,14 @@ static const PyMethodDef pattern_methods[] = {
 
 static const PyMemberDef pattern_members[] = {
     {"pattern",     T_OBJECT,   offsetof(PyPatternObject, pattern),     READONLY},
-    {"flags",       T_INT,      offsetof(PyPatternObject, options),     READONLY},
+    {"flags",       T_INT,      offsetof(PyPatternObject, flags),       READONLY},
     {"groups",      T_INT,      offsetof(PyPatternObject, groups),      READONLY},
     {"groupindex",  T_OBJECT,   offsetof(PyPatternObject, groupindex),  READONLY},
     {NULL}      /* sentinel */
 };
 
 static PyTypeObject PyPattern_Type = {
-    PyObject_HEAD_INIT(NULL)
-    0,                                  /* ob_size */
+    PyVarObject_HEAD_INIT(NULL, 0)
     "_pcre.Pattern",                    /* tp_name */
     sizeof(PyPatternObject),            /* tp_basicsize */
     0,                                  /* tp_itemsize */
@@ -672,10 +849,11 @@ typedef struct {
     PyObject_HEAD
     PyPatternObject *pattern; /* pattern instance */
     PyObject *subject; /* as passed in */
-    PyObject *data; /* owns UTF-8 data for PCRE */
+    pypcre_string_t str; /* UTF-8 string */
     int *ovector; /* matched spans */
     int startpos; /* after boundary checks */
     int endpos; /* after boundary checks */
+    int flags; /* as passed in */
     int lastindex; /* returned by pcre_exec */
 } PyMatchObject;
 
@@ -719,9 +897,8 @@ get_span(PyMatchObject *op, Py_ssize_t index, int *pos, int *endpos)
     /* If subject has been encoded internally to UTF-8,
      * convert byte offsets into character offsets.
      */
-    if (op->subject != op->data)
-        utf8_byte_to_char_offsets(PyString_AS_STRING(op->data),
-                PyString_GET_SIZE(op->data), pos, endpos);
+    if (op->subject != op->str.op)
+        pypcre_string_byte_to_char_offsets(&op->str, pos, endpos);
 
     return 0;
 }
@@ -759,32 +936,31 @@ static int
 match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
 {
     PyPatternObject *pattern;
-    PyObject *subject, *temp;
-    int pos = -1, endpos = -1, options = 0, *ovector, ovecsize, startoffset, size, rc;
-    const char *data;
-    Py_ssize_t length;
+    PyObject *subject;
+    int pos = -1, endpos = -1, flags = 0, options, *ovector, ovecsize, startoffset, size, rc;
+    pypcre_string_t str;
 
     static const char *const kwlist[] = {"pattern", "string", "pos", "endpos", "flags", NULL};
-    
+
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!O|iii:__init__", (char **)kwlist,
-            &PyPattern_Type, &pattern, &subject, &pos, &endpos, &options))
+            &PyPattern_Type, &pattern, &subject, &pos, &endpos, &flags))
         return -1;
 
     if (assert_pattern_ready(pattern) < 0)
         return -1;
 
     /* Extract UTF-8 string from the subject object.  Encode if needed. */
-    temp = get_string(subject, &options, &data, &length);
-    if (temp == NULL)
+    options = flags;
+    if (pypcre_string_get(&str, subject, &options) < 0)
         return -1;
 
     /* Check bounds. */
     if (pos < 0)
         pos = 0;
-    if (endpos < 0 || endpos > length)
-        endpos = length;
+    if (endpos < 0 || endpos > str.length)
+        endpos = str.length;
     if (pos > endpos) {
-        Py_DECREF(temp);
+        pypcre_string_release(&str);
         PyErr_SetNone(PyExc_NoMatch);
         return -1;
     }
@@ -794,23 +970,23 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
      */
     startoffset = pos;
     size = endpos;
-    if (temp != subject)
-        utf8_char_to_byte_offsets(data, length, &startoffset, &size);
+    if (str.op != subject)
+        pypcre_string_char_to_byte_offsets(&str, &startoffset, &size);
 
     /* Create ovector array. */
     ovecsize = (pattern->groups + 1) * 3;
     ovector = pcre_malloc(ovecsize * sizeof(int));
     if (ovector == NULL) {
-        Py_DECREF(temp);
+        pypcre_string_release(&str);
         PyErr_NoMemory();
         return -1;
     }
 
     /* Perform the match. */
-    rc = pcre_exec(pattern->code, pattern->extra, data, size, startoffset,
+    rc = pcre_exec(pattern->code, pattern->extra, str.string, size, startoffset,
             options & ~PCRE_UTF8, ovector, ovecsize);
     if (rc < 0) {
-        Py_DECREF(temp);
+        pypcre_string_release(&str);
         pcre_free(ovector);
         set_pcre_error(rc, "failed to match pattern");
         return -1;
@@ -824,14 +1000,15 @@ match_init(PyMatchObject *self, PyObject *args, PyObject *kwds)
     self->subject = subject;
     Py_INCREF(subject);
 
-    Py_CLEAR(self->data);
-    self->data = temp;
+    pypcre_string_release(&self->str);
+    memcpy(&self->str, &str, sizeof(pypcre_string_t));
 
     pcre_free(self->ovector);
     self->ovector = ovector;
 
     self->startpos = pos;
     self->endpos = endpos;
+    self->flags = flags;
     self->lastindex = rc - 1;
 
     return 0;
@@ -842,7 +1019,7 @@ match_dealloc(PyMatchObject *self)
 {
     Py_XDECREF(self->pattern);
     Py_XDECREF(self->subject);
-    Py_XDECREF(self->data);
+    pypcre_string_release(&self->str);
     pcre_free(self->ovector);
     Py_TYPE(self)->tp_free(self);
 }
@@ -1044,7 +1221,11 @@ match_lastgroup_getter(PyMatchObject *self, void *closure)
     /* Simple reverse lookup into groupindex. */
     pos = 0;
     while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
+#ifdef PY3
+        if (PyLong_Check(value) && PyLong_AS_LONG(value) == self->lastindex) {
+#else
         if (PyInt_Check(value) && PyInt_AS_LONG(value) == self->lastindex) {
+#endif
             Py_INCREF(key);
             return key;
         }
@@ -1102,12 +1283,12 @@ static const PyMemberDef match_members[] = {
     {"re",          T_OBJECT,   offsetof(PyMatchObject, pattern),   READONLY},
     {"pos",         T_INT,      offsetof(PyMatchObject, startpos),  READONLY},
     {"endpos",      T_INT,      offsetof(PyMatchObject, endpos),    READONLY},
+    {"flags",       T_INT,      offsetof(PyMatchObject, flags),     READONLY},
     {NULL}      /* sentinel */
 };
 
 static PyTypeObject PyMatch_Type = {
-    PyObject_HEAD_INIT(NULL)
-    0,                                  /* ob_size */
+    PyVarObject_HEAD_INIT(NULL, 0)
     "_pcre.Match",                      /* tp_name */
     sizeof(PyMatchObject),              /* tp_basicsize */
     0,                                  /* tp_itemsize */
@@ -1149,13 +1330,17 @@ static PyTypeObject PyMatch_Type = {
 };
 
 /*
- * module
+ * _pcre
  */
 
 static PyObject *
 get_version(PyObject *self)
 {
-    return PyString_FromString(pcre_version());
+#ifdef PY3
+    return PyUnicode_FromString(pcre_version());
+#else
+    return PyBytes_FromString(pcre_version());
+#endif
 }
 
 static PyObject *
@@ -1172,69 +1357,101 @@ get_jit_target(PyObject *self)
     }
 
     if (target)
-        return PyString_FromString(target);
+        return PyBytes_FromString(target);
 #endif
 
     /* Empty string if PCRE library built without JIT support. */
-    return PyString_FromString("");
+    return PyBytes_FromString("");
 }
 
-static const PyMethodDef methods[] = {
+static const PyMethodDef pypcre_methods[] = {
     {"get_version",     (PyCFunction)get_version,       METH_NOARGS},
     {"get_jit_target",  (PyCFunction)get_jit_target,    METH_NOARGS},
     {NULL}          /* sentinel */
 };
 
-PyMODINIT_FUNC
-init_pcre(void)
+#ifdef PY3
+static PyModuleDef pypcre_module = {
+    PyModuleDef_HEAD_INIT,
+    "_pcre",
+    NULL,
+    -1,
+    (PyMethodDef *)pypcre_methods
+};
+#endif
+
+static PyObject *
+pypcre_init(void)
 {
-    PyObject *mod;
+    PyObject *m;
 
     /* Use Python memory manager for PCRE allocations. */
     pcre_malloc = PyMem_Malloc;
     pcre_free = PyMem_Free;
 
     /* _pcre */
-    mod = Py_InitModule("_pcre", (PyMethodDef *)methods);
+#ifdef PY3
+    m = PyModule_Create(&pypcre_module);
+#else
+    m = Py_InitModule("_pcre", (PyMethodDef *)pypcre_methods);
+#endif
+    if (m == NULL)
+        return NULL;
 
     /* Pattern */
     PyPattern_Type.tp_new = PyType_GenericNew;
     PyType_Ready(&PyPattern_Type);
     Py_INCREF(&PyPattern_Type);
-    PyModule_AddObject(mod, "Pattern", (PyObject *)&PyPattern_Type);
+    PyModule_AddObject(m, "Pattern", (PyObject *)&PyPattern_Type);
 
     /* Match */
     PyMatch_Type.tp_new = PyType_GenericNew;
     PyType_Ready(&PyMatch_Type);
     Py_INCREF(&PyMatch_Type);
-    PyModule_AddObject(mod, "Match", (PyObject *)&PyMatch_Type);
+    PyModule_AddObject(m, "Match", (PyObject *)&PyMatch_Type);
 
     /* NoMatch exception */
     PyExc_NoMatch = PyErr_NewException("pcre.NoMatch",
             PyExc_Exception, NULL);
     Py_INCREF(PyExc_NoMatch);
-    PyModule_AddObject(mod, "NoMatch", PyExc_NoMatch);
+    PyModule_AddObject(m, "NoMatch", PyExc_NoMatch);
 
     /* PCREError exception */
     PyExc_PCREError = PyErr_NewException("pcre.PCREError",
             PyExc_EnvironmentError, NULL);
     Py_INCREF(PyExc_PCREError);
-    PyModule_AddObject(mod, "PCREError", PyExc_PCREError);
+    PyModule_AddObject(m, "PCREError", PyExc_PCREError);
 
     /* pcre_compile and/or pcre_exec flags */
-    PyModule_AddIntConstant(mod, "IGNORECASE", PCRE_CASELESS);
-    PyModule_AddIntConstant(mod, "MULTILINE", PCRE_MULTILINE);
-    PyModule_AddIntConstant(mod, "DOTALL", PCRE_DOTALL);
-    PyModule_AddIntConstant(mod, "UNICODE", PCRE_UCP);
-    PyModule_AddIntConstant(mod, "VERBOSE", PCRE_EXTENDED);
-    PyModule_AddIntConstant(mod, "ANCHORED", PCRE_ANCHORED);
-    PyModule_AddIntConstant(mod, "NOTBOL", PCRE_NOTBOL);
-    PyModule_AddIntConstant(mod, "NOTEOL", PCRE_NOTEOL);
-    PyModule_AddIntConstant(mod, "NOTEMPTY", PCRE_NOTEMPTY);
-    PyModule_AddIntConstant(mod, "NOTEMPTY_ATSTART", PCRE_NOTEMPTY_ATSTART);
-    PyModule_AddIntConstant(mod, "UTF8", PCRE_UTF8);
-    PyModule_AddIntConstant(mod, "NO_UTF8_CHECK", PCRE_NO_UTF8_CHECK);
+    PyModule_AddIntConstant(m, "IGNORECASE", PCRE_CASELESS);
+    PyModule_AddIntConstant(m, "MULTILINE", PCRE_MULTILINE);
+    PyModule_AddIntConstant(m, "DOTALL", PCRE_DOTALL);
+    PyModule_AddIntConstant(m, "UNICODE", PCRE_UCP);
+    PyModule_AddIntConstant(m, "VERBOSE", PCRE_EXTENDED);
+    PyModule_AddIntConstant(m, "ANCHORED", PCRE_ANCHORED);
+    PyModule_AddIntConstant(m, "NOTBOL", PCRE_NOTBOL);
+    PyModule_AddIntConstant(m, "NOTEOL", PCRE_NOTEOL);
+    PyModule_AddIntConstant(m, "NOTEMPTY", PCRE_NOTEMPTY);
+    PyModule_AddIntConstant(m, "NOTEMPTY_ATSTART", PCRE_NOTEMPTY_ATSTART);
+    PyModule_AddIntConstant(m, "UTF8", PCRE_UTF8);
+    PyModule_AddIntConstant(m, "NO_UTF8_CHECK", PCRE_NO_UTF8_CHECK);
 
     /* pcre_study flags */
-    PyModule_AddIntConstant(mod, "STUDY_JIT", PCRE_STUDY_JIT_COMPILE);
+    PyModule_AddIntConstant(m, "STUDY_JIT", PCRE_STUDY_JIT_COMPILE);
+
+    return m;
 }
+
+#ifdef PY3
+PyMODINIT_FUNC
+PyInit__pcre(void)
+{
+    return pypcre_init();
+}
+#else
+PyMODINIT_FUNC
+init_pcre(void)
+{
+    pypcre_init();
+}
+#endif

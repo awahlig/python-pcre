@@ -98,13 +98,36 @@ class Pattern(_pcre.Pattern):
         return (string[:0].join(output), n)
 
     def __reduce__(self):
+        if self.pattern is None:
+            return (Pattern, (None, 0, self.dumps()))
         return (Pattern, (self.pattern, self.flags))
+
+    def __repr__(self):
+        if self.pattern is None:
+            return '{}.loads({!r})'.format(__name__, self.dumps())
+        flags = self.flags
+        if flags:
+            v = []
+            for name in _FLAGS:
+                value = getattr(_pcre, name)
+                if flags & value:
+                    v.append('{}.{}'.format(__name__, name))
+                    flags &= ~value
+            if flags:
+                v.append(hex(flags))
+            return '{}.compile({!r}, {})'.format(__name__, self.pattern, '|'.join(v))
+        return '{}.compile({!r})'.format(__name__, self.pattern)
 
 class Match(_pcre.Match):
     def expand(self, template):
         return template.format(self.group(), *self.groups(''), **self.groupdict(''))
 
-class REMatch(_pcre.Match):
+    def __repr__(self):
+        cls = self.__class__
+        return '<{}.{} object; span={!r}, match={!r}>'.format(cls.__module__,
+            cls.__name__, self.span(), self.group())
+
+class REMatch(Match):
     def expand(self, template):
         groups = (self.group(),) + self.groups()
         groupdict = self.groupdict()
@@ -156,9 +179,9 @@ def sub(pattern, repl, string, count=0, flags=0):
 def subn(pattern, repl, string, count=0, flags=0):
     return compile(pattern, flags).subn(repl, string, count)
 
-def loads(data, pattern=None):
+def loads(data):
     # Loads a pattern serialized with Pattern.dumps().
-    return Pattern(pattern, loads=data)
+    return Pattern(None, loads=data)
 
 def escape(pattern):
     # Escapes a regular expression.
@@ -200,18 +223,22 @@ get_jit_target = _pcre.get_jit_target
 MAXREPEAT = 65536
 
 # Pattern and/or match flags
-I = IGNORECASE = _pcre.IGNORECASE
-M = MULTILINE = _pcre.MULTILINE
-S = DOTALL = _pcre.DOTALL
-U = UNICODE = _pcre.UNICODE
-X = VERBOSE = _pcre.VERBOSE
-ANCHORED = _pcre.ANCHORED
-NOTBOL = _pcre.NOTBOL
-NOTEOL = _pcre.NOTEOL
-NOTEMPTY = _pcre.NOTEMPTY
-NOTEMPTY_ATSTART = _pcre.NOTEMPTY_ATSTART
-UTF8 = _pcre.UTF8
-NO_UTF8_CHECK = _pcre.NO_UTF8_CHECK
+_FLAGS = ('IGNORECASE', 'MULTILINE', 'DOTALL', 'UNICODE', 'VERBOSE',
+          'ANCHORED', 'NOTBOL', 'NOTEOL', 'NOTEMPTY', 'NOTEMPTY_ATSTART',
+          'UTF8', 'NO_UTF8_CHECK')
+
+# Copy flags from _pcre module
+ns = globals()
+for name in _FLAGS:
+    ns[name] = getattr(_pcre, name)
+del ns, name
+
+# Short versions
+I = IGNORECASE
+M = MULTILINE
+S = DOTALL
+U = UNICODE
+X = VERBOSE
 
 # Study flags
 STUDY_JIT = _pcre.STUDY_JIT
