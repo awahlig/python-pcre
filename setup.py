@@ -37,7 +37,7 @@ _pcre = Extension('_pcre', ['src/pcremodule.c'],
 
 
 setup(name='python-pcre',
-      version='0.4',
+      version='0.5',
       description='Python PCRE bindings',
       author='Arkadiusz Wahlig',
       url='https://github.com/awahlig/python-pcre',
