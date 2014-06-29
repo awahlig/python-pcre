@@ -128,14 +128,11 @@ implement [PEP 393](http://legacy.python.org/dev/peps/pep-0393/), unicode string
 stored internally as ascii are passed to PCRE directly.  Other internal formats are
 encoded into UTF-8 using Python APIs (which use the UTF-8 form cached in the unicode
 object if available).  In older Python versions these optimizations are not supported
-and unicode objects have to always be encoded before they can be passed to the PCRE
-library.
+so all unicode objects require the extra encoding step.
 
-python-pcre also accepts objects supporting the buffer interface.  An example are
-`array.array` objects.  Supported are both old and new buffer APIs with buffers
-containing either bytes or unicode characters.  In Python 3.3 or newer both UCS-2
-and UCS-4 are supported.  In older Python versions supported unicode size depends
-on Python build type.
+python-pcre also accepts objects supporting the buffer interface, such as `array.array`
+objects.  Supported are both old and new buffer APIs with buffers containing either bytes
+or unicode characters, with the same UTF-8 encoding strategy as byte/unicode strings.
 
 When internally encoding subject strings to UTF-8, any offsets accepted as input
 or provided as output are also converted between byte and character offsets so that
