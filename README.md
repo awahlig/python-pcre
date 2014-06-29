@@ -7,13 +7,10 @@ Python bindings for PCRE regex engine.
 Requirements
 ------------
 
-* PCRE_
-* Python_
+* [PCRE](http://www.pcre.org) 8.x
+* [Python](http://python.org) 2.7 or 3.x
 
 Tested with Python 2.7, 3.4 and PCRE 8.12, 8.30, 8.35.
-
-.. _PCRE: http://www.pcre.org
-.. _Python: http://python.org
 
 
 Building and installation
@@ -36,7 +33,8 @@ add `--enable-jit`.
 Differences between python-pcre and re
 --------------------------------------
 
-The API is very similar to that of the built-in `re module`_.
+The API is very similar to that of the built-in
+[re module](http://docs.python.org/library/re.html).
 
 Differences:
 
@@ -47,10 +45,8 @@ Differences:
 * patterns are not cached
 * scanner APIs are not supported
 
-For a comprehensive PCRE regex syntax you can visit `PHP documentation`_.
-
-.. _`re module`: http://docs.python.org/library/re.html
-.. _`PHP documentation`: http://php.net/manual/en/reference.pcre.pattern.syntax.php
+For a comprehensive PCRE regex syntax you can visit
+[PHP documentation](http://php.net/manual/en/reference.pcre.pattern.syntax.php).
 
 
 Substitution
@@ -101,7 +97,7 @@ didn't match are replaced with `''` whereas in `re` mode it's an error to refere
 such groups in the template.
 
 Also note that in Python 3.x `bytes.format()` is not available so the template needs
-to be a `str`.  Python 2.7 has both `unicode.format()` as well as `str/bytes.format()`.
+to be a `str`.
 
 
 Unicode handling
@@ -128,11 +124,12 @@ u'\xdc'  # one character
 ```
 
 python-pcre also accepts unicode strings as input.  In Python 3.3 or newer, which
-implement `PEP 393`_, unicode strings stored internally as ascii are passed to PCRE
-directly.  Other internal formats are encoded into UTF-8 using Python APIs (which use
-the UTF-8 form cached in the unicode object if available).  In older Python versions
-these optimizations are not supported and unicode objects have to always be encoded
-before they can be passed to the PCRE library.
+implement [PEP 393](http://legacy.python.org/dev/peps/pep-0393/), unicode strings
+stored internally as ascii are passed to PCRE directly.  Other internal formats are
+encoded into UTF-8 using Python APIs (which use the UTF-8 form cached in the unicode
+object if available).  In older Python versions these optimizations are not supported
+and unicode objects have to always be encoded before they can be passed to the PCRE
+library.
 
 python-pcre also accepts objects supporting the buffer interface.  An example are
 `array.array` objects.  Supported are both old and new buffer APIs with buffers
@@ -145,8 +142,6 @@ or provided as output are also converted between byte and character offsets so t
 the caller doesn't need to be aware of the conversion -- the offsets are always
 indexes into the specified subject string, whether it's a byte string or a unicode
 string.
-
-.. _`PEP 393`: http://legacy.python.org/dev/peps/pep-0393/
 
 
 License
