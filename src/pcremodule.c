@@ -39,15 +39,23 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #    endif
 #endif
 
+#define PYPCRE_ERROR_STUDY      (-50)
+#define PYPCRE_CONFIG_NONE      (1000)
+#define PYPCRE_CONFIG_VERSION   (1001)
+
 /* JIT was added in PCRE 8.20. */
 #ifdef PCRE_STUDY_JIT_COMPILE
-#    define PCRE_HAS_JIT_API
+#    define PYPCRE_HAS_JIT_API
 #else
-#    define PCRE_STUDY_JIT_COMPILE (0)
-#    define pcre_free_study pcre_free
+#    define PCRE_STUDY_JIT_COMPILE  (0)
+#    define PCRE_CONFIG_JIT         PYPCRE_CONFIG_NONE
+#    define PCRE_CONFIG_JITTARGET   PYPCRE_CONFIG_NONE
+#    define pcre_free_study         pcre_free
 #endif
 
-#define PYPCRE_ERROR_STUDY (-50)
+#ifndef PCRE_CONFIG_PARENS_LIMIT
+#    define PCRE_CONFIG_PARENS_LIMIT    PYPCRE_CONFIG_NONE
+#endif
 
 static PyObject *PyExc_PCREError;
 static PyObject *PyExc_NoMatch;
@@ -419,7 +427,7 @@ typedef struct {
     PyObject *groupindex; /* name->index dict */
     pcre *code; /* compiled pattern */
     pcre_extra *extra; /* pcre_study result */
-#ifdef PCRE_HAS_JIT_API
+#ifdef PYPCRE_HAS_JIT_API
     pcre_jit_stack *jit_stack; /* user-allocated jit stack */
 #endif
     int flags; /* as passed in */
@@ -639,7 +647,7 @@ pattern_dealloc(PyPatternObject *self)
     Py_XDECREF(self->groupindex);
     pcre_free(self->code);
     pcre_free_study(self->extra);
-#ifdef PCRE_HAS_JIT_API
+#ifdef PYPCRE_HAS_JIT_API
     if (self->jit_stack)
         pcre_jit_stack_free(self->jit_stack);
 #endif
@@ -680,7 +688,7 @@ static PyObject *
 pattern_set_jit_stack(PyPatternObject *self, PyObject *args)
 {
     int startsize, maxsize;
-#ifdef PCRE_HAS_JIT_API
+#ifdef PYPCRE_HAS_JIT_API
     int rc, jit;
     pcre_jit_stack *stack;
 #endif
@@ -688,7 +696,7 @@ pattern_set_jit_stack(PyPatternObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "ii", &startsize, &maxsize))
         return NULL;
 
-#ifdef PCRE_HAS_JIT_API
+#ifdef PYPCRE_HAS_JIT_API
     /* Check whether PCRE library has been built with JIT support. */
     if ((rc = pcre_config(PCRE_CONFIG_JIT, &jit)) != 0) {
         set_pcre_error(rc, "failed to query JIT support");
@@ -1333,40 +1341,97 @@ static PyTypeObject PyMatch_Type = {
  * _pcre
  */
 
-static PyObject *
-get_version(PyObject *self)
+static int
+_config_do_get_int(PyObject *dict, const char *name, int what, int boolean)
 {
+    int rc, value = 0;
+    PyObject *op;
+
+    if (what != PYPCRE_CONFIG_NONE)
+        pcre_config(what, &value);
+
+    if (boolean)
+        op = PyBool_FromLong(value);
+    else
+        op = PyInt_FromLong(value);
+    if (op == NULL)
+        return -1;
+
+    rc = PyDict_SetItemString(dict, name, op);
+    Py_DECREF(op);
+    return rc;
+}
+
+static int
+_config_get_int(PyObject *dict, const char *name, int what)
+{
+    return _config_do_get_int(dict, name, what, 0);
+}
+
+static int
+_config_get_bool(PyObject *dict, const char *name, int what)
+{
+    return _config_do_get_int(dict, name, what, 1);
+}
+
+static int
+_config_get_str(PyObject *dict, const char *name, int what)
+{
+    int rc;
+    const char *value = NULL;
+    PyObject *op;
+
+    if (what == PYPCRE_CONFIG_VERSION)
+        value = pcre_version();
+    else if (what != PYPCRE_CONFIG_NONE)
+        pcre_config(what, &value);
+
+    if (value == NULL)
+        value = "";
+
 #ifdef PY3
-    return PyUnicode_FromString(pcre_version());
+    op = PyUnicode_FromString(value);
 #else
-    return PyBytes_FromString(pcre_version());
+    op = PyBytes_FromString(value);
 #endif
+    if (op == NULL)
+        return -1;
+
+    rc = PyDict_SetItemString(dict, name, op);
+    Py_DECREF(op);
+    return rc;
 }
 
 static PyObject *
-get_jit_target(PyObject *self)
+get_config(PyObject *self)
 {
-#ifdef PCRE_HAS_JIT_API
-    int rc;
-    const char *target;
+    PyObject *dict;
 
-    /* Query the JIT target.  Sets to NULL if no JIT support. */
-    if ((rc = pcre_config(PCRE_CONFIG_JITTARGET, &target)) != 0) {
-        set_pcre_error(rc, "failed to query JIT target");
+    dict = PyDict_New();
+    if (dict == NULL)
+        return NULL;
+
+    if (_config_get_str(dict, "version", PYPCRE_CONFIG_VERSION) < 0
+            || _config_get_bool(dict, "utf_8", PCRE_CONFIG_UTF8) < 0
+            || _config_get_bool(dict, "unicode_properties", PCRE_CONFIG_UNICODE_PROPERTIES) < 0
+            || _config_get_bool(dict, "jit", PCRE_CONFIG_JIT) < 0
+            || _config_get_str(dict, "jit_target", PCRE_CONFIG_JITTARGET) < 0
+            || _config_get_int(dict, "newline", PCRE_CONFIG_NEWLINE) < 0
+            || _config_get_bool(dict, "bsr", PCRE_CONFIG_BSR) < 0
+            || _config_get_int(dict, "link_size", PCRE_CONFIG_LINK_SIZE) < 0
+            || _config_get_int(dict, "parens_limit", PCRE_CONFIG_PARENS_LIMIT) < 0
+            || _config_get_int(dict, "match_limit", PCRE_CONFIG_MATCH_LIMIT) < 0
+            || _config_get_int(dict, "match_limit_recursion", PCRE_CONFIG_MATCH_LIMIT_RECURSION) < 0
+            || _config_get_bool(dict, "stack_recurse", PCRE_CONFIG_STACKRECURSE) < 0) {
+        Py_DECREF(dict);
         return NULL;
     }
 
-    if (target)
-        return PyBytes_FromString(target);
-#endif
-
-    /* Empty string if PCRE library built without JIT support. */
-    return PyBytes_FromString("");
+    return dict;
 }
 
 static const PyMethodDef pypcre_methods[] = {
-    {"get_version",     (PyCFunction)get_version,       METH_NOARGS},
-    {"get_jit_target",  (PyCFunction)get_jit_target,    METH_NOARGS},
+    {"get_config",  (PyCFunction)get_config,    METH_NOARGS},
     {NULL}          /* sentinel */
 };
 

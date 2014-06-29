@@ -29,7 +29,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import _pcre
 
 __version__ = '0.4'
-__pcre_version__ = _pcre.get_version()
 
 class Pattern(_pcre.Pattern):
     def search(self, string, pos=-1, endpos=-1, flags=0):
@@ -212,15 +211,13 @@ def enable_re_template_mode():
     global Match
     Match = REMatch
 
-def is_jit_supported():
-    # Tells if PCRE library has been built with JIT support.
-    return bool(get_jit_target())
-
 _ALNUM = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890')
 error = PCREError = _pcre.PCREError
 NoMatch = _pcre.NoMatch
-get_jit_target = _pcre.get_jit_target
 MAXREPEAT = 65536
+
+# Provides PCRE build-time configuration.
+config = type('config', (), _pcre.get_config())
 
 # Pattern and/or match flags
 _FLAGS = ('IGNORECASE', 'MULTILINE', 'DOTALL', 'UNICODE', 'VERBOSE',
