@@ -39,6 +39,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #    endif
 #endif
 
+/* Custom errors/configs. */
 #define PYPCRE_ERROR_STUDY      (-50)
 #define PYPCRE_CONFIG_NONE      (1000)
 #define PYPCRE_CONFIG_VERSION   (1001)
@@ -53,6 +54,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #    define pcre_free_study         pcre_free
 #endif
 
+/* Flag added in PCRE 8.34. */
 #ifndef PCRE_CONFIG_PARENS_LIMIT
 #    define PCRE_CONFIG_PARENS_LIMIT    PYPCRE_CONFIG_NONE
 #endif
@@ -60,8 +62,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 static PyObject *PyExc_PCREError;
 static PyObject *PyExc_NoMatch;
 
-/* Used to hold UTF-8 data created from all supported inputs
- * in most efficient way.
+/* Used to hold UTF-8 data extracted from any of the supported
+ * input objects in a most efficient way.
  */
 typedef struct {
     const char *string;
@@ -70,8 +72,19 @@ typedef struct {
     Py_buffer *buffer;
 } pypcre_string_t;
 
+/* Release buffer created by pypcre_buffer_get(). */
+static void
+pypcre_buffer_release(Py_buffer *buffer)
+{
+    if (buffer) {
+        PyBuffer_Release(buffer);
+        PyMem_Free(buffer);
+    }
+}
+
+/* Get new style buffer from object <op>. */
 static Py_buffer *
-pypcre_buffer_get(PyObject *op)
+pypcre_buffer_get(PyObject *op, int flags)
 {
     Py_buffer *view;
 
@@ -82,7 +95,7 @@ pypcre_buffer_get(PyObject *op)
     }
 
     memset(view, 0, sizeof(Py_buffer));
-    if (PyObject_GetBuffer(op, view, PyBUF_ND) < 0) {
+    if (PyObject_GetBuffer(op, view, flags) < 0) {
         PyMem_Free(view);
         return NULL;
     }
@@ -90,16 +103,7 @@ pypcre_buffer_get(PyObject *op)
     return view;
 }
 
-static void
-pypcre_buffer_release(Py_buffer *buffer)
-{
-    if (buffer) {
-        PyBuffer_Release(buffer);
-        PyMem_Free(buffer);
-    }
-}
-
-/* Release string resources. */
+/* Release string created by pypcre_string_get(). */
 static void
 pypcre_string_release(pypcre_string_t *str)
 {
@@ -110,6 +114,7 @@ pypcre_string_release(pypcre_string_t *str)
     }
 }
 
+/* Helper function handling buffers containing bytes. */
 static int
 _string_get_from_bytes(pypcre_string_t *str, PyObject *op, int *options,
                        Py_buffer *view, int viewrel)
@@ -171,7 +176,7 @@ _string_get_from_bytes(pypcre_string_t *str, PyObject *op, int *options,
 }
 
 #ifndef PY3_NEW_UNICODE
-/* Extract UTF-8 from Py_UNICODE array. */
+/* Helper function handling buffers containing Py_UNICODE. */
 static int
 _string_get_from_pyunicode(pypcre_string_t *str, int *options, Py_buffer *view,
                            int viewrel, Py_ssize_t size)
@@ -199,7 +204,7 @@ _string_get_from_pyunicode(pypcre_string_t *str, int *options, Py_buffer *view,
  * If PCRE_UTF8 option is set, bytes-like objects are assumed to be UTF-8.
  * Sets PCRE_NO_UTF8_CHECK option if encoded internally or ascii.
  * Returns 0 if successful or sets an exception and returns -1 in case
- * of an error.  Use pypcre_string_release() when done with the string.
+ * of an error.
  */
 static int
 pypcre_string_get(pypcre_string_t *str, PyObject *op, int *options)
@@ -249,7 +254,7 @@ pypcre_string_get(pypcre_string_t *str, PyObject *op, int *options)
     if (PyObject_CheckBuffer(op)) {
         Py_buffer *view;
 
-        view = pypcre_buffer_get(op);
+        view = pypcre_buffer_get(op, PyBUF_ND);
         if (view == NULL)
             return -1;
 
@@ -314,7 +319,7 @@ pypcre_string_get(pypcre_string_t *str, PyObject *op, int *options)
             return -1;
 
         /* Segment contains bytes. */
-        if (PyString_Check(op) || view.len == size)
+        if (PyBytes_Check(op) || view.len == size)
             return _string_get_from_bytes(str, op, options, &view, 0);
 
         /* Segment contains unicode. */
@@ -330,34 +335,6 @@ pypcre_string_get(pypcre_string_t *str, PyObject *op, int *options)
     PyErr_Format(PyExc_TypeError, "expected string or buffer, not %.200s",
             Py_TYPE(op)->tp_name);
     return -1;
-}
-
-/* Sets an exception from PCRE error code and error string. */
-static void
-set_pcre_error(int rc, const char *s)
-{
-    PyObject *op;
-
-    switch (rc) {
-        case PCRE_ERROR_NOMEMORY:
-            PyErr_NoMemory();
-            break;
-
-        case PCRE_ERROR_NOMATCH:
-            PyErr_SetNone(PyExc_NoMatch);
-            break;
-
-        case 5: /* number too big in {} quantifier */
-            PyErr_SetString(PyExc_OverflowError, s);
-            break;
-
-        default:
-            op = Py_BuildValue("(is)", rc, s);
-            if (op) {
-                PyErr_SetObject(PyExc_PCREError, op);
-                Py_DECREF(op);
-            }
-    }
 }
 
 #define ISUTF8(c) (((c) & 0xC0) != 0x80)
@@ -414,6 +391,34 @@ pypcre_string_char_to_byte_offsets(const pypcre_string_t *str, int *pos, int *en
         while ((charnum < offset) && (i < length))
             UTF8LOOPBODY
         *endpos = i;
+    }
+}
+
+/* Sets an exception from PCRE error code and error string. */
+static void
+set_pcre_error(int rc, const char *s)
+{
+    PyObject *op;
+
+    switch (rc) {
+        case PCRE_ERROR_NOMEMORY:
+            PyErr_NoMemory();
+            break;
+
+        case PCRE_ERROR_NOMATCH:
+            PyErr_SetNone(PyExc_NoMatch);
+            break;
+
+        case 5: /* number too big in {} quantifier */
+            PyErr_SetString(PyExc_OverflowError, s);
+            break;
+
+        default:
+            op = Py_BuildValue("(is)", rc, s);
+            if (op) {
+                PyErr_SetObject(PyExc_PCREError, op);
+                Py_DECREF(op);
+            }
     }
 }
 
@@ -518,6 +523,7 @@ make_groupindex(pcre *code, int unicode)
 
         /* Create group name object. */
 #ifdef PY3
+        /* XXX re module in 3 always uses unicode here */
         key = PyUnicode_FromString((const char *)(table + 2));
 #else
         if (unicode)
@@ -1230,10 +1236,11 @@ match_lastgroup_getter(PyMatchObject *self, void *closure)
     pos = 0;
     while (PyDict_Next(self->pattern->groupindex, &pos, &key, &value)) {
 #ifdef PY3
-        if (PyLong_Check(value) && PyLong_AS_LONG(value) == self->lastindex) {
+        if (PyLong_Check(value) && PyLong_AS_LONG(value) == self->lastindex)
 #else
-        if (PyInt_Check(value) && PyInt_AS_LONG(value) == self->lastindex) {
+        if (PyInt_Check(value) && PyInt_AS_LONG(value) == self->lastindex)
 #endif
+        {
             Py_INCREF(key);
             return key;
         }
