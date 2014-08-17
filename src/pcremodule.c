@@ -1369,6 +1369,25 @@ _config_do_get_int(PyObject *dict, const char *name, int what, int boolean)
     return rc;
 }
 
+static unsigned long
+_config_get_ulong(PyObject *dict, const char *name, int what)
+{
+    int rc;
+    unsigned long value = 0;
+    PyObject *op;
+
+    if (what != PYPCRE_CONFIG_NONE)
+        pcre_config(what, &value);
+
+    op = PyInt_FromLong(value);
+    if (op == NULL)
+        return -1;
+
+    rc = PyDict_SetItemString(dict, name, op);
+    Py_DECREF(op);
+    return rc;
+}
+
 static int
 _config_get_int(PyObject *dict, const char *name, int what)
 {
@@ -1427,8 +1446,8 @@ get_config(PyObject *self)
             || _config_get_bool(dict, "bsr", PCRE_CONFIG_BSR) < 0
             || _config_get_int(dict, "link_size", PCRE_CONFIG_LINK_SIZE) < 0
             || _config_get_int(dict, "parens_limit", PCRE_CONFIG_PARENS_LIMIT) < 0
-            || _config_get_int(dict, "match_limit", PCRE_CONFIG_MATCH_LIMIT) < 0
-            || _config_get_int(dict, "match_limit_recursion", PCRE_CONFIG_MATCH_LIMIT_RECURSION) < 0
+            || _config_get_ulong(dict, "match_limit", PCRE_CONFIG_MATCH_LIMIT) < 0
+            || _config_get_ulong(dict, "match_limit_recursion", PCRE_CONFIG_MATCH_LIMIT_RECURSION) < 0
             || _config_get_bool(dict, "stack_recurse", PCRE_CONFIG_STACKRECURSE) < 0) {
         Py_DECREF(dict);
         return NULL;
