@@ -103,19 +103,19 @@ class Pattern(_pcre.Pattern):
 
     def __repr__(self):
         if self.pattern is None:
-            return '{}.loads({!r})'.format(__name__, self.dumps())
+            return '{0}.loads({1})'.format(__name__, repr(self.dumps()))
         flags = self.flags
         if flags:
             v = []
             for name in _FLAGS:
                 value = getattr(_pcre, name)
                 if flags & value:
-                    v.append('{}.{}'.format(__name__, name))
+                    v.append('{0}.{1}'.format(__name__, name))
                     flags &= ~value
             if flags:
                 v.append(hex(flags))
-            return '{}.compile({!r}, {})'.format(__name__, self.pattern, '|'.join(v))
-        return '{}.compile({!r})'.format(__name__, self.pattern)
+            return '{0}.compile({1}, {2})'.format(__name__, repr(self.pattern), '|'.join(v))
+        return '{0}.compile({1})'.format(__name__, repr(self.pattern))
 
 class Match(_pcre.Match):
     def expand(self, template):
@@ -123,8 +123,8 @@ class Match(_pcre.Match):
 
     def __repr__(self):
         cls = self.__class__
-        return '<{}.{} object; span={!r}, match={!r}>'.format(cls.__module__,
-            cls.__name__, self.span(), self.group())
+        return '<{0}.{1} object; span={2}, match={3}>'.format(cls.__module__,
+            cls.__name__, repr(self.span()), repr(self.group()))
 
 class REMatch(Match):
     def expand(self, template):
