@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # --------------------------------------------------------------------------
 # This file is a modified re module testsuite from Python 2.7.5.
 #
