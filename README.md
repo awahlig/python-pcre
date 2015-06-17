@@ -8,9 +8,9 @@ Requirements
 ------------
 
 * [PCRE](http://www.pcre.org) 8.x
-* [Python](http://python.org) 2.7 or 3.x
+* [Python](http://python.org) 2.6+ or 3.x
 
-Tested with Python 2.7, 3.4 and PCRE 8.12, 8.30, 8.35.
+Tested with Python 2.6, 2.7, 3.4 and PCRE 8.12, 8.30, 8.35.
 
 
 Building and installation
