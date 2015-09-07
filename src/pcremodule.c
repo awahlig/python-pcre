@@ -1445,7 +1445,7 @@ get_config(PyObject *self)
             || _config_get_int(dict, "newline", PCRE_CONFIG_NEWLINE) < 0
             || _config_get_bool(dict, "bsr", PCRE_CONFIG_BSR) < 0
             || _config_get_int(dict, "link_size", PCRE_CONFIG_LINK_SIZE) < 0
-            || _config_get_int(dict, "parens_limit", PCRE_CONFIG_PARENS_LIMIT) < 0
+            || _config_get_ulong(dict, "parens_limit", PCRE_CONFIG_PARENS_LIMIT) < 0
             || _config_get_ulong(dict, "match_limit", PCRE_CONFIG_MATCH_LIMIT) < 0
             || _config_get_ulong(dict, "match_limit_recursion", PCRE_CONFIG_MATCH_LIMIT_RECURSION) < 0
             || _config_get_bool(dict, "stack_recurse", PCRE_CONFIG_STACKRECURSE) < 0) {
