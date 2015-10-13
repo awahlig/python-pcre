@@ -28,7 +28,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import _pcre
 
-__version__ = '0.6'
+__version__ = '0.7'
 
 class Pattern(_pcre.Pattern):
     def search(self, string, pos=-1, endpos=-1, flags=0):
